@@ -190,31 +190,129 @@ header h1 {
 ========================= */
 
 .map-box {
-    height: 400px;
-    background:
-        linear-gradient(#151515 1px, transparent 1px),
-        linear-gradient(90deg, #151515 1px, transparent 1px);
-    background-size: 40px 40px;
-    border: 2px solid #333;
+    min-height: 520px;
+    background: #06100c;
+    border: 2px solid #00ff88;
     border-radius: 12px;
     position: relative;
     overflow: hidden;
+    box-shadow: inset 0 0 35px rgba(0,255,136,0.08), 0 0 18px rgba(0,255,136,0.05);
 }
 
 .map-title {
-    text-align: center;
-    padding: 20px;
+    position: absolute;
+    z-index: 5;
+    top: 12px;
+    left: 15px;
+    padding: 8px 12px;
     color: #00ff88;
+    background: rgba(8,16,13,0.88);
+    border: 1px solid #00ff88;
+    border-radius: 7px;
     font-weight: bold;
+    letter-spacing: 1px;
+}
+
+.world-map {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0.78;
+    filter: invert(1) sepia(1) saturate(3) hue-rotate(95deg) brightness(0.72);
+}
+
+.map-grid {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    background:
+        linear-gradient(rgba(0,255,136,0.09) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,255,136,0.09) 1px, transparent 1px);
+    background-size: 45px 45px;
+    mix-blend-mode: screen;
+}
+
+.map-vignette {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+    background: radial-gradient(circle, transparent 48%, rgba(0,0,0,0.5) 100%);
+}
+
+.map-controls {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 12px 0;
+}
+
+.map-toggle {
+    background: #181818;
+    color: white;
+    border: 2px solid #00ff88;
+    border-radius: 8px;
+    padding: 10px 15px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.map-toggle.active,
+.map-toggle:hover {
+    background: #00ff88;
+    color: black;
+}
+
+.map-box.underground {
+    background: #020504;
+}
+
+.map-box.underground .world-map {
+    opacity: 0.45;
+    filter: grayscale(1) invert(1) brightness(0.35) contrast(1.8);
+}
+
+.map-box.underground .map-grid {
+    background:
+        linear-gradient(rgba(0,255,136,0.16) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,255,136,0.16) 1px, transparent 1px),
+        repeating-linear-gradient(135deg, transparent 0 34px, rgba(0,255,136,0.07) 35px 36px);
+    background-size: 38px 38px, 38px 38px, auto;
 }
 
 .location {
     position: absolute;
+    z-index: 4;
+    transform: translate(-50%, -50%);
     background: #00ff88;
     color: black;
-    padding: 8px;
+    padding: 8px 10px;
     border-radius: 6px;
     font-weight: bold;
+    box-shadow: 0 0 14px rgba(0,255,136,0.55);
+    border: 1px solid #b8ffdf;
+    white-space: nowrap;
+}
+
+.map-legend {
+    position: absolute;
+    z-index: 5;
+    right: 12px;
+    bottom: 12px;
+    background: rgba(8,16,13,0.9);
+    border: 1px solid #333;
+    border-radius: 7px;
+    padding: 8px 10px;
+    color: #aaa;
+    font-size: 12px;
+}
+
+.underground-note {
+    color: #aaa;
+    margin: 0;
 }
 
 /* =========================
@@ -568,50 +666,39 @@ canvas {
 
     <h2>🗺️ WORLD MAP</h2>
 
-    <div class="map-box">
+    <div class="map-controls">
+        <button class="map-toggle active" id="surfaceMapButton" onclick="setMapMode('surface')">🌎 SURFACE MAP</button>
+        <button class="map-toggle" id="undergroundMapButton" onclick="setMapMode('underground')">🕳️ UNDERGROUND MAP</button>
+    </div>
 
-        <div class="map-title">
-            SFA WORLD MAP
-        </div>
+    <div class="map-box" id="worldMapBox">
+        <div class="map-title" id="mapModeTitle">SFA WORLD MAP — SURFACE</div>
 
-        <div
-            class="location"
-            style="left:20%;top:35%;"
+        <img
+            class="world-map"
+            src="https://upload.wikimedia.org/wikipedia/commons/8/80/World_map_-_low_resolution.svg"
+            alt="World map"
         >
-            🏢 SFA HQ
-        </div>
 
-        <div
-            class="location"
-            style="left:65%;top:25%;"
-        >
-            🏙️ Sector A
-        </div>
+        <div class="map-grid"></div>
+        <div class="map-vignette"></div>
 
-        <div
-            class="location"
-            style="left:45%;top:65%;"
-        >
-            ⛺ Sector B
-        </div>
+        <div class="location" style="left:13%;top:43%;">🏢 SFA HQ</div>
+        <div class="location" style="left:51%;top:34%;">🏙️ Sector A</div>
+        <div class="location" style="left:54%;top:68%;">⛺ Sector B</div>
+        <div class="location" style="left:76%;top:52%;">🛰️ Research Zone</div>
 
-        <div
-            class="location"
-            style="left:75%;top:70%;"
-        >
-            🛰️ Research Zone
-        </div>
-
+        <div class="map-legend">🟢 SFA location markers</div>
     </div>
 
     <div class="info-box">
-
-        <h3>🕳️ Underground Map</h3>
-
-        <p>
-            Underground facilities and hidden locations.
+        <h3 id="undergroundTitle">🌎 Surface Network</h3>
+        <p id="undergroundDescription" class="underground-note">
+            A geographic world view showing SFA locations across the surface.
         </p>
-
+        <p style="color:#666;font-size:12px;margin-bottom:0;">
+            Map base: Wikimedia Commons world map, used under its stated Creative Commons license.
+        </p>
     </div>
 
 </div>
@@ -1360,6 +1447,38 @@ function openPanel(name) {
 
 }
 
+
+
+
+/* ==================================================
+   MAP MODE
+================================================== */
+
+function setMapMode(mode) {
+
+    const map = document.getElementById("worldMapBox");
+    const title = document.getElementById("mapModeTitle");
+    const infoTitle = document.getElementById("undergroundTitle");
+    const description = document.getElementById("undergroundDescription");
+    const surfaceButton = document.getElementById("surfaceMapButton");
+    const undergroundButton = document.getElementById("undergroundMapButton");
+
+    if (mode === "underground") {
+        map.classList.add("underground");
+        title.textContent = "SFA WORLD MAP — UNDERGROUND";
+        infoTitle.textContent = "🕳️ Underground Network";
+        description.textContent = "The same world geography transformed into a dark, mechanical underground command map.";
+        surfaceButton.classList.remove("active");
+        undergroundButton.classList.add("active");
+    } else {
+        map.classList.remove("underground");
+        title.textContent = "SFA WORLD MAP — SURFACE";
+        infoTitle.textContent = "🌎 Surface Network";
+        description.textContent = "A geographic world view showing SFA locations across the surface.";
+        undergroundButton.classList.remove("active");
+        surfaceButton.classList.add("active");
+    }
+}
 
 /* ==================================================
    ACTIONS
