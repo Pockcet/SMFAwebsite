@@ -39,6 +39,7 @@ body {
     border-radius: 15px;
     padding: 30px;
     text-align: center;
+    box-shadow: 0 0 30px rgba(0,255,136,0.12);
 }
 
 .login-logo {
@@ -55,7 +56,8 @@ body {
     color: #aaa;
 }
 
-.login-box input {
+.login-box input,
+.account-input {
     width: 100%;
     padding: 13px;
     margin: 8px 0;
@@ -66,7 +68,8 @@ body {
     font-size: 16px;
 }
 
-.login-box input:focus {
+.login-box input:focus,
+.account-input:focus {
     outline: none;
     border-color: #00ff88;
 }
@@ -81,6 +84,11 @@ body {
     border-radius: 8px;
     font-weight: bold;
     cursor: pointer;
+    font-size: 16px;
+}
+
+.login-button:hover {
+    background: #00cc6a;
 }
 
 .login-error {
@@ -90,7 +98,7 @@ body {
 }
 
 /* =========================
-   MAIN WEBSITE
+   WEBSITE
 ========================= */
 
 #website {
@@ -163,6 +171,73 @@ header h1 {
     border-radius: 12px;
     padding: 20px;
     margin-top: 15px;
+}
+
+/* =========================
+   TEAM
+========================= */
+
+.member {
+    background: #101010;
+    border: 1px solid #333;
+    border-radius: 10px;
+    padding: 15px;
+    margin: 10px 0;
+}
+
+/* =========================
+   MAP
+========================= */
+
+.map-box {
+    height: 400px;
+    background:
+        linear-gradient(#151515 1px, transparent 1px),
+        linear-gradient(90deg, #151515 1px, transparent 1px);
+    background-size: 40px 40px;
+    border: 2px solid #333;
+    border-radius: 12px;
+    position: relative;
+    overflow: hidden;
+}
+
+.map-title {
+    text-align: center;
+    padding: 20px;
+    color: #00ff88;
+    font-weight: bold;
+}
+
+.location {
+    position: absolute;
+    background: #00ff88;
+    color: black;
+    padding: 8px;
+    border-radius: 6px;
+    font-weight: bold;
+}
+
+/* =========================
+   ACTION
+========================= */
+
+.action-button {
+    display: block;
+    width: 100%;
+    margin: 10px 0;
+    padding: 15px;
+    background: #181818;
+    color: white;
+    border: 2px solid #00ff88;
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: left;
+    font-weight: bold;
+}
+
+.action-button:hover {
+    background: #00ff88;
+    color: black;
 }
 
 /* =========================
@@ -271,7 +346,8 @@ canvas {
     margin-top: 15px;
 }
 
-.stock-buttons button {
+.stock-buttons button,
+.command-button {
     background: #181818;
     color: white;
     border: 2px solid #00ff88;
@@ -282,84 +358,56 @@ canvas {
     font-weight: bold;
 }
 
-.stock-buttons button:hover {
+.stock-buttons button:hover,
+.command-button:hover {
     background: #00ff88;
     color: black;
 }
 
 /* =========================
-   MAP
+   ACCOUNT
 ========================= */
 
-.map-box {
-    height: 400px;
-    background:
-        linear-gradient(#151515 1px, transparent 1px),
-        linear-gradient(90deg, #151515 1px, transparent 1px);
-    background-size: 40px 40px;
-    border: 2px solid #333;
-    border-radius: 12px;
-    position: relative;
-    overflow: hidden;
+.account-section {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #333;
 }
 
-.map-title {
-    text-align: center;
-    padding: 20px;
+.success {
     color: #00ff88;
-    font-weight: bold;
 }
 
-.location {
-    position: absolute;
-    background: #00ff88;
-    color: black;
-    padding: 8px;
-    border-radius: 6px;
-    font-weight: bold;
+.error {
+    color: #ff4d4d;
 }
 
 /* =========================
-   TEAM
+   MOBILE
 ========================= */
 
-.member {
-    background: #101010;
-    border: 1px solid #333;
-    border-radius: 10px;
-    padding: 15px;
-    margin: 10px 0;
-}
+@media (max-width: 600px) {
 
-/* =========================
-   ACTION
-========================= */
+    .logo {
+        font-size: 40px;
+    }
 
-.action-button {
-    display: block;
-    width: 100%;
-    margin: 10px 0;
-    padding: 15px;
-    background: #181818;
-    color: white;
-    border: 2px solid #00ff88;
-    border-radius: 8px;
-    cursor: pointer;
-    text-align: left;
-    font-weight: bold;
-}
+    header h1 {
+        font-size: 22px;
+    }
 
-.action-button:hover {
-    background: #00ff88;
-    color: black;
-}
+    .navigation button {
+        width: 100%;
+    }
 
-/* =========================
-   COMMAND
-========================= */
+    .stock-name {
+        font-size: 19px;
+    }
 
-.command-button {
-    margin-top: 10px;
+    .price {
+        font-size: 27px;
+    }
+
 }
 </style>
 </head>
@@ -367,9 +415,9 @@ canvas {
 <body>
 
 
-<!-- =========================
+<!-- ==================================================
      LOGIN SCREEN
-========================= -->
+================================================== -->
 
 <div id="loginScreen">
 
@@ -412,9 +460,9 @@ canvas {
 </div>
 
 
-<!-- =========================
+<!-- ==================================================
      MAIN WEBSITE
-========================= -->
+================================================== -->
 
 <div id="website">
 
@@ -429,9 +477,9 @@ canvas {
 </header>
 
 
-<!-- =========================
+<!-- ==================================================
      NAVIGATION
-========================= -->
+================================================== -->
 
 <div class="navigation">
 
@@ -458,9 +506,9 @@ canvas {
 </div>
 
 
-<!-- =========================
+<!-- ==================================================
      TEAM
-========================= -->
+================================================== -->
 
 <div id="team" class="panel">
 
@@ -495,9 +543,9 @@ canvas {
 </div>
 
 
-<!-- =========================
+<!-- ==================================================
      MAP
-========================= -->
+================================================== -->
 
 <div id="map" class="panel">
 
@@ -552,9 +600,9 @@ canvas {
 </div>
 
 
-<!-- =========================
+<!-- ==================================================
      ACTION
-========================= -->
+================================================== -->
 
 <div id="action" class="panel">
 
@@ -589,7 +637,7 @@ canvas {
 
         <button
             class="action-button"
-            onclick="actionMessage('Organization status updated.')"
+            onclick="actionMessage('World status checked.')"
         >
             📡 CHECK WORLD STATUS
         </button>
@@ -601,9 +649,9 @@ canvas {
 </div>
 
 
-<!-- =========================
+<!-- ==================================================
      STOCKS
-========================= -->
+================================================== -->
 
 <div id="stocks" class="panel">
 
@@ -635,9 +683,9 @@ canvas {
 </div>
 
 
-<!-- =========================
+<!-- ==================================================
      COMMAND CENTER
-========================= -->
+================================================== -->
 
 <div id="command" class="panel">
 
@@ -652,23 +700,73 @@ canvas {
         </p>
 
         <p>
-            Current rank:
+            Username:
+            <b>President</b>
+        </p>
+
+        <p>
+            Rank:
             <b>President</b>
         </p>
 
         <button
+            class="command-button"
             onclick="commandMessage()"
         >
             📋 REQUEST PROMOTION
         </button>
 
         <button
+            class="command-button"
             onclick="alert('Command communication system coming soon!')"
         >
             💬 CONTACT COMMAND
         </button>
 
         <p id="commandResult"></p>
+
+
+        <!-- ACCOUNT SETTINGS -->
+
+        <div class="account-section">
+
+            <h3>🔐 Account Settings</h3>
+
+            <p>
+                Change your Command HQ password.
+            </p>
+
+            <input
+                class="account-input"
+                type="password"
+                id="oldPassword"
+                placeholder="Current password"
+            >
+
+            <input
+                class="account-input"
+                type="password"
+                id="newPassword"
+                placeholder="New password"
+            >
+
+            <input
+                class="account-input"
+                type="password"
+                id="confirmPassword"
+                placeholder="Confirm new password"
+            >
+
+            <button
+                class="command-button"
+                onclick="changePassword()"
+            >
+                🔑 CHANGE PASSWORD
+            </button>
+
+            <p id="passwordResult"></p>
+
+        </div>
 
     </div>
 
@@ -679,9 +777,259 @@ canvas {
 
 <script>
 
-/* =========================
+/* ==================================================
+   ACCOUNT / PASSWORD
+================================================== */
+
+let savedPassword =
+    localStorage.getItem("sfaPassword");
+
+
+if (!savedPassword) {
+
+    savedPassword = "Smfa";
+
+    localStorage.setItem(
+        "sfaPassword",
+        savedPassword
+    );
+
+}
+
+
+/* ==================================================
+   PLAYER MONEY
+================================================== */
+
+let money;
+
+const savedMoney =
+    localStorage.getItem("sfaMoney");
+
+if (savedMoney !== null) {
+
+    money = Number(savedMoney);
+
+} else {
+
+    money = 10000;
+
+}
+
+
+/* ==================================================
+   PORTFOLIO
+================================================== */
+
+let portfolio;
+
+const savedPortfolio =
+    localStorage.getItem("sfaPortfolio");
+
+
+if (savedPortfolio) {
+
+    portfolio =
+        JSON.parse(savedPortfolio);
+
+} else {
+
+    portfolio = {
+        ADI: 0,
+        ICD: 0,
+        NEX: 0,
+        SFC: 0
+    };
+
+}
+
+
+/* Make sure every stock exists */
+
+if (portfolio.ADI === undefined) portfolio.ADI = 0;
+if (portfolio.ICD === undefined) portfolio.ICD = 0;
+if (portfolio.NEX === undefined) portfolio.NEX = 0;
+if (portfolio.SFC === undefined) portfolio.SFC = 0;
+
+
+/* ==================================================
+   STOCK COMPANIES
+================================================== */
+
+const companies = {
+
+    ADI: {
+        name: "AeroDyne Industries",
+        description:
+            "Aircraft, aviation systems and flight gear",
+        price: 120
+    },
+
+    ICD: {
+        name: "Ironclad Dynamics",
+        description:
+            "Armored vehicles and equipment",
+        price: 85
+    },
+
+    NEX: {
+        name: "Nexora Industries",
+        description:
+            "Everyday products and consumer goods",
+        price: 64
+    },
+
+    SFC: {
+        name: "Stellar Frontier Corp.",
+        description:
+            "Spacecraft, satellites and space equipment",
+        price: 210
+    }
+
+};
+
+
+/* ==================================================
+   LOAD STOCK PRICES
+================================================== */
+
+const savedPrices =
+    localStorage.getItem("sfaPrices");
+
+
+if (savedPrices) {
+
+    const prices =
+        JSON.parse(savedPrices);
+
+    for (const ticker in companies) {
+
+        if (prices[ticker] !== undefined) {
+
+            companies[ticker].price =
+                Number(prices[ticker]);
+
+        }
+
+    }
+
+}
+
+
+/* ==================================================
+   PRICE HISTORY
+================================================== */
+
+let history;
+
+const savedHistory =
+    localStorage.getItem("sfaHistory");
+
+
+if (savedHistory) {
+
+    history =
+        JSON.parse(savedHistory);
+
+} else {
+
+    history = {};
+
+    for (const ticker in companies) {
+
+        history[ticker] = [];
+
+        for (let i = 0; i < 60; i++) {
+
+            history[ticker].push(
+                companies[ticker].price
+            );
+
+        }
+
+    }
+
+}
+
+
+/* Make sure histories exist */
+
+for (const ticker in companies) {
+
+    if (!history[ticker]) {
+
+        history[ticker] = [];
+
+        for (let i = 0; i < 60; i++) {
+
+            history[ticker].push(
+                companies[ticker].price
+            );
+
+        }
+
+    }
+
+}
+
+
+/* ==================================================
+   NPC MARKET
+================================================== */
+
+const npc = {};
+
+for (const ticker in companies) {
+
+    npc[ticker] = {
+        buyers: 0,
+        sellers: 0
+    };
+
+}
+
+
+/* ==================================================
+   SAVE EVERYTHING
+================================================== */
+
+function saveGame() {
+
+    localStorage.setItem(
+        "sfaMoney",
+        money
+    );
+
+    localStorage.setItem(
+        "sfaPortfolio",
+        JSON.stringify(portfolio)
+    );
+
+    const prices = {};
+
+    for (const ticker in companies) {
+
+        prices[ticker] =
+            companies[ticker].price;
+
+    }
+
+    localStorage.setItem(
+        "sfaPrices",
+        JSON.stringify(prices)
+    );
+
+    localStorage.setItem(
+        "sfaHistory",
+        JSON.stringify(history)
+    );
+
+}
+
+
+/* ==================================================
    LOGIN
-========================= */
+================================================== */
 
 function login() {
 
@@ -691,9 +1039,10 @@ function login() {
     const password =
         document.getElementById("password").value;
 
+
     if (
         username === "President" &&
-        password === "Smfa"
+        password === savedPassword
     ) {
 
         document.getElementById("loginScreen")
@@ -702,7 +1051,12 @@ function login() {
         document.getElementById("website")
             .style.display = "block";
 
+        document.getElementById("loginError")
+            .style.display = "none";
+
         openPanel("team");
+
+        renderStocks();
 
     } else {
 
@@ -714,7 +1068,7 @@ function login() {
 }
 
 
-/* ENTER KEY LOGIN */
+/* ENTER TO LOGIN */
 
 document.addEventListener(
     "keydown",
@@ -734,9 +1088,88 @@ document.addEventListener(
 );
 
 
-/* =========================
+/* ==================================================
+   CHANGE PASSWORD
+================================================== */
+
+function changePassword() {
+
+    const oldPassword =
+        document.getElementById("oldPassword").value;
+
+    const newPassword =
+        document.getElementById("newPassword").value;
+
+    const confirmPassword =
+        document.getElementById("confirmPassword").value;
+
+    const result =
+        document.getElementById("passwordResult");
+
+
+    if (oldPassword !== savedPassword) {
+
+        result.textContent =
+            "❌ Current password is incorrect.";
+
+        result.className = "error";
+
+        return;
+
+    }
+
+
+    if (newPassword.length < 4) {
+
+        result.textContent =
+            "❌ New password must be at least 4 characters.";
+
+        result.className = "error";
+
+        return;
+
+    }
+
+
+    if (newPassword !== confirmPassword) {
+
+        result.textContent =
+            "❌ New passwords do not match.";
+
+        result.className = "error";
+
+        return;
+
+    }
+
+
+    savedPassword =
+        newPassword;
+
+
+    localStorage.setItem(
+        "sfaPassword",
+        savedPassword
+    );
+
+
+    result.textContent =
+        "✅ Password changed successfully!";
+
+    result.className =
+        "success";
+
+
+    document.getElementById("oldPassword").value = "";
+    document.getElementById("newPassword").value = "";
+    document.getElementById("confirmPassword").value = "";
+
+}
+
+
+/* ==================================================
    PANELS
-========================= */
+================================================== */
 
 function openPanel(name) {
 
@@ -748,8 +1181,10 @@ function openPanel(name) {
 
         });
 
+
     const selected =
         document.getElementById(name);
+
 
     if (selected) {
 
@@ -760,9 +1195,9 @@ function openPanel(name) {
 }
 
 
-/* =========================
+/* ==================================================
    ACTIONS
-========================= */
+================================================== */
 
 function actionMessage(message) {
 
@@ -773,9 +1208,9 @@ function actionMessage(message) {
 }
 
 
-/* =========================
+/* ==================================================
    COMMAND
-========================= */
+================================================== */
 
 function commandMessage() {
 
@@ -786,93 +1221,9 @@ function commandMessage() {
 }
 
 
-/* =========================
-   STOCK DATA
-========================= */
-
-const companies = {
-
-    ADI: {
-        name: "AeroDyne Industries",
-        description: "Aircraft, aviation systems and flight gear",
-        price: 120
-    },
-
-    ICD: {
-        name: "Ironclad Dynamics",
-        description: "Armored vehicles and equipment",
-        price: 85
-    },
-
-    NEX: {
-        name: "Nexora Industries",
-        description: "Everyday products and consumer goods",
-        price: 64
-    },
-
-    SFC: {
-        name: "Stellar Frontier Corp.",
-        description: "Spacecraft, satellites and space equipment",
-        price: 210
-    }
-
-};
-
-
-/* =========================
-   PLAYER
-========================= */
-
-let money = 10000;
-
-const portfolio = {
-    ADI: 0,
-    ICD: 0,
-    NEX: 0,
-    SFC: 0
-};
-
-
-/* =========================
-   HISTORY
-========================= */
-
-const history = {};
-
-for (const ticker in companies) {
-
-    history[ticker] = [];
-
-    for (let i = 0; i < 60; i++) {
-
-        history[ticker].push(
-            companies[ticker].price
-        );
-
-    }
-
-}
-
-
-/* =========================
-   NPC
-========================= */
-
-const npc = {};
-
-for (const ticker in companies) {
-
-    npc[ticker] = {
-        buyers: 0,
-        sellers: 0
-    };
-
-}
-
-
-/* =========================
+/* ==================================================
    MONEY FORMAT
-========================= */
+================================================== */
 
 function formatMoney(value) {
 
@@ -888,9 +1239,9 @@ function formatMoney(value) {
 }
 
 
-/* =========================
-   CHART
-========================= */
+/* ==================================================
+   DRAW CHART
+================================================== */
 
 function drawChart(canvas, prices) {
 
@@ -903,14 +1254,22 @@ function drawChart(canvas, prices) {
     const height =
         canvas.clientHeight;
 
+
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+
     const ratio =
         window.devicePixelRatio || 1;
+
 
     canvas.width =
         width * ratio;
 
     canvas.height =
         height * ratio;
+
 
     ctx.setTransform(
         ratio,
@@ -920,6 +1279,7 @@ function drawChart(canvas, prices) {
         0,
         0
     );
+
 
     ctx.clearRect(
         0,
@@ -938,12 +1298,18 @@ function drawChart(canvas, prices) {
     let range =
         max - min;
 
+
     if (range === 0) {
         range = 1;
     }
 
 
+    /* Grid */
+
     ctx.strokeStyle = "#222";
+
+    ctx.lineWidth = 1;
+
 
     for (let i = 1; i < 5; i++) {
 
@@ -953,6 +1319,7 @@ function drawChart(canvas, prices) {
         ctx.beginPath();
 
         ctx.moveTo(0, y);
+
         ctx.lineTo(width, y);
 
         ctx.stroke();
@@ -960,7 +1327,10 @@ function drawChart(canvas, prices) {
     }
 
 
+    /* Price line */
+
     ctx.beginPath();
+
 
     prices.forEach(
         (price, index) => {
@@ -970,26 +1340,40 @@ function drawChart(canvas, prices) {
                 (prices.length - 1)
                 * width;
 
+
             const y =
                 height -
                 ((price - min) / range)
                 * (height - 20) -
                 10;
 
+
             if (index === 0) {
+
                 ctx.moveTo(x, y);
+
             } else {
+
                 ctx.lineTo(x, y);
+
             }
 
         }
     );
 
 
+    const first =
+        prices[0];
+
+    const last =
+        prices[prices.length - 1];
+
+
     ctx.strokeStyle =
-        prices[prices.length - 1] >= prices[0]
+        last >= first
         ? "#00ff88"
         : "#ff4d4d";
+
 
     ctx.lineWidth = 3;
 
@@ -998,14 +1382,20 @@ function drawChart(canvas, prices) {
 }
 
 
-/* =========================
+/* ==================================================
    RENDER STOCKS
-========================= */
+================================================== */
 
 function renderStocks() {
 
     const container =
         document.getElementById("stockList");
+
+
+    if (!container) {
+        return;
+    }
+
 
     container.innerHTML = "";
 
@@ -1015,21 +1405,26 @@ function renderStocks() {
         const company =
             companies[ticker];
 
+
         const current =
             company.price;
+
 
         const starting =
             history[ticker][0];
 
+
         const percent =
-            ((current - starting) /
-            starting) * 100;
+            ((current - starting)
+            / starting) * 100;
+
 
         const positive =
             percent >= 0;
 
 
         let pressure;
+
 
         if (
             npc[ticker].buyers >
@@ -1041,11 +1436,21 @@ function renderStocks() {
                     BUYING PRESSURE 📈
                 </span>`;
 
-        } else {
+        } else if (
+            npc[ticker].sellers >
+            npc[ticker].buyers
+        ) {
 
             pressure =
                 `<span class="sellers">
                     SELLING PRESSURE 📉
+                </span>`;
+
+        } else {
+
+            pressure =
+                `<span class="neutral">
+                    MARKET NEUTRAL
                 </span>`;
 
         }
@@ -1054,7 +1459,9 @@ function renderStocks() {
         const card =
             document.createElement("div");
 
-        card.className = "stock";
+
+        card.className =
+            "stock";
 
 
         card.innerHTML = `
@@ -1069,13 +1476,16 @@ function renderStocks() {
 
             </div>
 
+
             <div class="description">
                 ${company.description}
             </div>
 
+
             <div class="price">
                 ${formatMoney(current)}
             </div>
+
 
             <div class="${positive ? "up" : "down"}">
 
@@ -1085,9 +1495,13 @@ function renderStocks() {
 
             </div>
 
+
             <div class="chart">
+
                 <canvas></canvas>
+
             </div>
+
 
             <div class="npc">
 
@@ -1096,6 +1510,7 @@ function renderStocks() {
                 <br>
 
                 🟢 Buyers:
+
                 <span class="buyers">
                     ${npc[ticker].buyers.toLocaleString()}
                 </span>
@@ -1103,6 +1518,7 @@ function renderStocks() {
                 <br>
 
                 🔴 Sellers:
+
                 <span class="sellers">
                     ${npc[ticker].sellers.toLocaleString()}
                 </span>
@@ -1110,6 +1526,7 @@ function renderStocks() {
                 <br>
 
                 ⚖️ Market:
+
                 ${pressure}
 
                 <br>
@@ -1119,6 +1536,7 @@ function renderStocks() {
 
             </div>
 
+
             <div class="stock-buttons">
 
                 <button
@@ -1126,6 +1544,7 @@ function renderStocks() {
                 >
                     BUY 1
                 </button>
+
 
                 <button
                     onclick="sell('${ticker}')"
@@ -1156,11 +1575,23 @@ function renderStocks() {
 }
 
 
-/* =========================
-   MARKET UPDATE
-========================= */
+/* ==================================================
+   NPC MARKET UPDATE
+================================================== */
 
 function updateMarket() {
+
+    /* Don't update until logged in */
+
+    if (
+        document.getElementById("website")
+            .style.display !== "block"
+    ) {
+
+        return;
+
+    }
+
 
     for (const ticker in companies) {
 
@@ -1169,6 +1600,7 @@ function updateMarket() {
                 400000 +
                 Math.random() * 600000
             );
+
 
         const sellers =
             Math.floor(
@@ -1179,6 +1611,7 @@ function updateMarket() {
 
         npc[ticker].buyers =
             buyers;
+
 
         npc[ticker].sellers =
             sellers;
@@ -1221,14 +1654,16 @@ function updateMarket() {
     }
 
 
+    saveGame();
+
     renderStocks();
 
 }
 
 
-/* =========================
-   BUY
-========================= */
+/* ==================================================
+   BUY STOCK
+================================================== */
 
 function buy(ticker) {
 
@@ -1251,7 +1686,11 @@ function buy(ticker) {
 
     portfolio[ticker]++;
 
-    companies[ticker].price *= 1.0005;
+
+    /* Small player market effect */
+
+    companies[ticker].price *=
+        1.0005;
 
 
     history[ticker].push(
@@ -1268,14 +1707,16 @@ function buy(ticker) {
     }
 
 
+    saveGame();
+
     renderStocks();
 
 }
 
 
-/* =========================
-   SELL
-========================= */
+/* ==================================================
+   SELL STOCK
+================================================== */
 
 function sell(ticker) {
 
@@ -1298,7 +1739,11 @@ function sell(ticker) {
 
     portfolio[ticker]--;
 
-    companies[ticker].price *= 0.9995;
+
+    /* Small player market effect */
+
+    companies[ticker].price *=
+        0.9995;
 
 
     history[ticker].push(
@@ -1315,20 +1760,34 @@ function sell(ticker) {
     }
 
 
+    saveGame();
+
     renderStocks();
 
 }
 
 
-/* =========================
+/* ==================================================
    START
-========================= */
+================================================== */
 
 renderStocks();
 
 setInterval(
     updateMarket,
     1000
+);
+
+
+/* Save before leaving */
+
+window.addEventListener(
+    "beforeunload",
+    function() {
+
+        saveGame();
+
+    }
 );
 
 </script>
