@@ -383,6 +383,23 @@ canvas {
 }
 
 /* =========================
+   PROMOTION INBOX
+========================= */
+
+.promotion-message {
+    background: #101010;
+    border: 1px solid #333;
+    border-left: 3px solid #00ff88;
+    border-radius: 10px;
+    padding: 15px;
+    margin: 10px 0;
+}
+
+.inbox-loading {
+    color: #aaa;
+}
+
+/* =========================
    MOBILE
 ========================= */
 
@@ -693,7 +710,9 @@ canvas {
 
     <div class="info-box">
 
-        <h3>President's Office</h3>
+        <h3 id="officeTitle">
+            President's Office
+        </h3>
 
         <p>
             Welcome to the SFA Command Center.
@@ -701,20 +720,25 @@ canvas {
 
         <p>
             Username:
-            <b>President</b>
+            <b id="currentUsername">President</b>
         </p>
 
         <p>
             Rank:
-            <b>President</b>
+            <b id="currentRank">President</b>
         </p>
 
+
+        <!-- PROMOTION BUTTON -->
+
         <button
+            id="promotionButton"
             class="command-button"
             onclick="commandMessage()"
         >
             📋 REQUEST PROMOTION
         </button>
+
 
         <button
             class="command-button"
@@ -723,7 +747,31 @@ canvas {
             💬 CONTACT COMMAND
         </button>
 
+
         <p id="commandResult"></p>
+
+
+        <!-- PRESIDENT INBOX -->
+
+        <div
+            id="promotionInbox"
+            class="account-section"
+            style="display:none;"
+        >
+
+            <h3>📨 PROMOTION REQUESTS</h3>
+
+            <p>
+                Online promotion requests from SFA personnel.
+            </p>
+
+            <div id="promotionMessages">
+                <span class="inbox-loading">
+                    📡 Loading messages...
+                </span>
+            </div>
+
+        </div>
 
 
         <!-- ACCOUNT SETTINGS -->
@@ -778,23 +826,35 @@ canvas {
 <script>
 
 /* ==================================================
-   ACCOUNT / PASSWORD
+   SUPABASE ONLINE CONNECTION
 ================================================== */
 
-let savedPassword =
-    localStorage.getItem("sfaPassword");
+const SUPABASE_URL =
+    "https://sfordyrvqpeqchbllilk.supabase.co";
+
+const SUPABASE_KEY =
+    "sb_publishable_IL8zDIZJ9bNJgJJSoGZtog_y1kcXicP";
 
 
-if (!savedPassword) {
+/* ==================================================
+   ACCOUNTS
+================================================== */
 
-    savedPassword = "Smfa";
+const accounts = {
 
-    localStorage.setItem(
-        "sfaPassword",
-        savedPassword
-    );
+    President: {
+        password: "Smfa",
+        rank: "President"
+    },
 
-}
+    Soldier: {
+        password: "123",
+        rank: "Soldier"
+    }
+
+};
+
+let currentUser = null;
 
 
 /* ==================================================
@@ -826,7 +886,6 @@ let portfolio;
 const savedPortfolio =
     localStorage.getItem("sfaPortfolio");
 
-
 if (savedPortfolio) {
 
     portfolio =
@@ -842,9 +901,6 @@ if (savedPortfolio) {
     };
 
 }
-
-
-/* Make sure every stock exists */
 
 if (portfolio.ADI === undefined) portfolio.ADI = 0;
 if (portfolio.ICD === undefined) portfolio.ICD = 0;
@@ -896,7 +952,6 @@ const companies = {
 const savedPrices =
     localStorage.getItem("sfaPrices");
 
-
 if (savedPrices) {
 
     const prices =
@@ -925,7 +980,6 @@ let history;
 const savedHistory =
     localStorage.getItem("sfaHistory");
 
-
 if (savedHistory) {
 
     history =
@@ -951,8 +1005,6 @@ if (savedHistory) {
 
 }
 
-
-/* Make sure histories exist */
 
 for (const ticker in companies) {
 
@@ -990,7 +1042,7 @@ for (const ticker in companies) {
 
 
 /* ==================================================
-   SAVE EVERYTHING
+   SAVE GAME
 ================================================== */
 
 function saveGame() {
@@ -1034,16 +1086,23 @@ function saveGame() {
 function login() {
 
     const username =
-        document.getElementById("username").value;
+        document.getElementById("username")
+            .value.trim();
 
     const password =
-        document.getElementById("password").value;
+        document.getElementById("password")
+            .value;
+
+    const account =
+        accounts[username];
 
 
     if (
-        username === "President" &&
-        password === savedPassword
+        account &&
+        account.password === password
     ) {
+
+        currentUser = username;
 
         document.getElementById("loginScreen")
             .style.display = "none";
@@ -1054,9 +1113,17 @@ function login() {
         document.getElementById("loginError")
             .style.display = "none";
 
+        updateCommandCenter();
+
         openPanel("team");
 
         renderStocks();
+
+        if (currentUser === "President") {
+
+            loadPromotionMessages();
+
+        }
 
     } else {
 
@@ -1068,7 +1135,9 @@ function login() {
 }
 
 
-/* ENTER TO LOGIN */
+/* ==================================================
+   ENTER TO LOGIN
+================================================== */
 
 document.addEventListener(
     "keydown",
@@ -1089,30 +1158,111 @@ document.addEventListener(
 
 
 /* ==================================================
+   UPDATE COMMAND CENTER
+================================================== */
+
+function updateCommandCenter() {
+
+    if (!currentUser) {
+        return;
+    }
+
+
+    const account =
+        accounts[currentUser];
+
+
+    document.getElementById(
+        "officeTitle"
+    ).textContent =
+        currentUser === "President"
+        ? "President's Office"
+        : "Soldier's Office";
+
+
+    document.getElementById(
+        "currentUsername"
+    ).textContent =
+        currentUser;
+
+
+    document.getElementById(
+        "currentRank"
+    ).textContent =
+        account.rank;
+
+
+    const promotionButton =
+        document.getElementById(
+            "promotionButton"
+        );
+
+
+    if (currentUser === "Soldier") {
+
+        promotionButton.style.display =
+            "inline-block";
+
+    } else {
+
+        promotionButton.style.display =
+            "none";
+
+    }
+
+
+    document.getElementById(
+        "promotionInbox"
+    ).style.display =
+        currentUser === "President"
+        ? "block"
+        : "none";
+
+}
+
+
+/* ==================================================
    CHANGE PASSWORD
 ================================================== */
 
 function changePassword() {
 
     const oldPassword =
-        document.getElementById("oldPassword").value;
+        document.getElementById(
+            "oldPassword"
+        ).value;
 
     const newPassword =
-        document.getElementById("newPassword").value;
+        document.getElementById(
+            "newPassword"
+        ).value;
 
     const confirmPassword =
-        document.getElementById("confirmPassword").value;
+        document.getElementById(
+            "confirmPassword"
+        ).value;
 
     const result =
-        document.getElementById("passwordResult");
+        document.getElementById(
+            "passwordResult"
+        );
 
 
-    if (oldPassword !== savedPassword) {
+    if (!currentUser) {
+        return;
+    }
+
+
+    if (
+        oldPassword !==
+        accounts[currentUser].password
+    ) {
 
         result.textContent =
             "❌ Current password is incorrect.";
 
-        result.className = "error";
+        result.className =
+            "error";
 
         return;
 
@@ -1124,33 +1274,31 @@ function changePassword() {
         result.textContent =
             "❌ New password must be at least 4 characters.";
 
-        result.className = "error";
+        result.className =
+            "error";
 
         return;
 
     }
 
 
-    if (newPassword !== confirmPassword) {
+    if (
+        newPassword !== confirmPassword
+    ) {
 
         result.textContent =
             "❌ New passwords do not match.";
 
-        result.className = "error";
+        result.className =
+            "error";
 
         return;
 
     }
 
 
-    savedPassword =
+    accounts[currentUser].password =
         newPassword;
-
-
-    localStorage.setItem(
-        "sfaPassword",
-        savedPassword
-    );
 
 
     result.textContent =
@@ -1160,9 +1308,17 @@ function changePassword() {
         "success";
 
 
-    document.getElementById("oldPassword").value = "";
-    document.getElementById("newPassword").value = "";
-    document.getElementById("confirmPassword").value = "";
+    document.getElementById(
+        "oldPassword"
+    ).value = "";
+
+    document.getElementById(
+        "newPassword"
+    ).value = "";
+
+    document.getElementById(
+        "confirmPassword"
+    ).value = "";
 
 }
 
@@ -1192,6 +1348,16 @@ function openPanel(name) {
 
     }
 
+
+    if (
+        name === "command" &&
+        currentUser === "President"
+    ) {
+
+        loadPromotionMessages();
+
+    }
+
 }
 
 
@@ -1201,22 +1367,260 @@ function openPanel(name) {
 
 function actionMessage(message) {
 
-    document.getElementById("actionResult")
-        .textContent =
+    document.getElementById(
+        "actionResult"
+    ).textContent =
         "✅ " + message;
 
 }
 
 
 /* ==================================================
-   COMMAND
+   ONLINE PROMOTION REQUEST
 ================================================== */
 
-function commandMessage() {
+async function commandMessage() {
 
-    document.getElementById("commandResult")
-        .textContent =
-        "📨 Promotion request sent to Command.";
+    if (currentUser !== "Soldier") {
+
+        return;
+
+    }
+
+
+    const result =
+        document.getElementById(
+            "commandResult"
+        );
+
+
+    result.textContent =
+        "📡 Sending promotion request...";
+
+
+    try {
+
+        const response =
+            await fetch(
+                SUPABASE_URL +
+                "/rest/v1/promotion_messages",
+                {
+
+                    method: "POST",
+
+                    headers: {
+
+                        "apikey":
+                            SUPABASE_KEY,
+
+                        "Authorization":
+                            "Bearer " +
+                            SUPABASE_KEY,
+
+                        "Content-Type":
+                            "application/json",
+
+                        "Prefer":
+                            "return=minimal"
+
+                    },
+
+                    body: JSON.stringify({
+
+                        sender:
+                            currentUser,
+
+                        message:
+                            currentUser +
+                            " has requested a promotion."
+
+                    })
+
+                }
+            );
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                "Database request failed."
+            );
+
+        }
+
+
+        result.textContent =
+            "✅ Promotion request sent to the President!";
+
+        result.className =
+            "success";
+
+
+    } catch (error) {
+
+        console.error(error);
+
+        result.textContent =
+            "❌ Could not send promotion request.";
+
+        result.className =
+            "error";
+
+    }
+
+}
+
+
+/* ==================================================
+   PRESIDENT PROMOTION INBOX
+================================================== */
+
+async function loadPromotionMessages() {
+
+    if (currentUser !== "President") {
+
+        return;
+
+    }
+
+
+    const inbox =
+        document.getElementById(
+            "promotionMessages"
+        );
+
+
+    if (!inbox) {
+        return;
+    }
+
+
+    inbox.innerHTML =
+        '<span class="inbox-loading">📡 Loading messages...</span>';
+
+
+    try {
+
+        const response =
+            await fetch(
+                SUPABASE_URL +
+                "/rest/v1/promotion_messages" +
+                "?select=*&order=created_at.desc",
+                {
+
+                    method: "GET",
+
+                    headers: {
+
+                        "apikey":
+                            SUPABASE_KEY,
+
+                        "Authorization":
+                            "Bearer " +
+                            SUPABASE_KEY
+
+                    }
+
+                }
+            );
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                "Could not load messages."
+            );
+
+        }
+
+
+        const messages =
+            await response.json();
+
+
+        if (messages.length === 0) {
+
+            inbox.innerHTML =
+                "<p>📭 No promotion requests yet.</p>";
+
+            return;
+
+        }
+
+
+        inbox.innerHTML = "";
+
+
+        messages.forEach(
+            message => {
+
+                const item =
+                    document.createElement(
+                        "div"
+                    );
+
+
+                item.className =
+                    "promotion-message";
+
+
+                item.innerHTML = `
+
+                    📨 <b>Promotion Request</b>
+
+                    <br>
+
+                    👤 From:
+                    <b>${escapeHTML(
+                        message.sender
+                    )}</b>
+
+                    <br>
+
+                    💬 ${escapeHTML(
+                        message.message
+                    )}
+
+                    <br>
+
+                    🕒 ${escapeHTML(
+                        message.created_at
+                    )}
+
+                `;
+
+
+                inbox.appendChild(item);
+
+            }
+        );
+
+
+    } catch (error) {
+
+        console.error(error);
+
+        inbox.innerHTML =
+            "❌ Could not load promotion requests.";
+
+    }
+
+}
+
+
+/* ==================================================
+   HTML SAFETY
+================================================== */
+
+function escapeHTML(text) {
+
+    const div =
+        document.createElement("div");
+
+    div.textContent =
+        text ?? "";
+
+    return div.innerHTML;
 
 }
 
@@ -1304,14 +1708,17 @@ function drawChart(canvas, prices) {
     }
 
 
-    /* Grid */
-
-    ctx.strokeStyle = "#222";
+    ctx.strokeStyle =
+        "#222";
 
     ctx.lineWidth = 1;
 
 
-    for (let i = 1; i < 5; i++) {
+    for (
+        let i = 1;
+        i < 5;
+        i++
+    ) {
 
         const y =
             height / 5 * i;
@@ -1326,8 +1733,6 @@ function drawChart(canvas, prices) {
 
     }
 
-
-    /* Price line */
 
     ctx.beginPath();
 
@@ -1389,7 +1794,9 @@ function drawChart(canvas, prices) {
 function renderStocks() {
 
     const container =
-        document.getElementById("stockList");
+        document.getElementById(
+            "stockList"
+        );
 
 
     if (!container) {
@@ -1568,8 +1975,9 @@ function renderStocks() {
     }
 
 
-    document.getElementById("balance")
-        .textContent =
+    document.getElementById(
+        "balance"
+    ).textContent =
         formatMoney(money);
 
 }
@@ -1581,11 +1989,10 @@ function renderStocks() {
 
 function updateMarket() {
 
-    /* Don't update until logged in */
-
     if (
-        document.getElementById("website")
-            .style.display !== "block"
+        document.getElementById(
+            "website"
+        ).style.display !== "block"
     ) {
 
         return;
@@ -1687,8 +2094,6 @@ function buy(ticker) {
     portfolio[ticker]++;
 
 
-    /* Small player market effect */
-
     companies[ticker].price *=
         1.0005;
 
@@ -1720,7 +2125,9 @@ function buy(ticker) {
 
 function sell(ticker) {
 
-    if (portfolio[ticker] <= 0) {
+    if (
+        portfolio[ticker] <= 0
+    ) {
 
         alert(
             "You don't own this stock!"
@@ -1739,8 +2146,6 @@ function sell(ticker) {
 
     portfolio[ticker]--;
 
-
-    /* Small player market effect */
 
     companies[ticker].price *=
         0.9995;
@@ -1779,7 +2184,9 @@ setInterval(
 );
 
 
-/* Save before leaving */
+/* ==================================================
+   SAVE BEFORE LEAVING
+================================================== */
 
 window.addEventListener(
     "beforeunload",
