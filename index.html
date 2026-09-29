@@ -1,0 +1,1337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Smiley Face Army</title>
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #0d0d0d;
+    color: white;
+}
+
+/* =========================
+   LOGIN
+========================= */
+
+#loginScreen {
+    position: fixed;
+    inset: 0;
+    background: #0d0d0d;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+}
+
+.login-box {
+    width: 90%;
+    max-width: 400px;
+    background: #181818;
+    border: 2px solid #00ff88;
+    border-radius: 15px;
+    padding: 30px;
+    text-align: center;
+}
+
+.login-logo {
+    font-size: 55px;
+    color: #00ff88;
+    font-weight: bold;
+}
+
+.login-box h1 {
+    margin: 5px 0;
+}
+
+.login-box p {
+    color: #aaa;
+}
+
+.login-box input {
+    width: 100%;
+    padding: 13px;
+    margin: 8px 0;
+    background: #0d0d0d;
+    color: white;
+    border: 1px solid #444;
+    border-radius: 8px;
+    font-size: 16px;
+}
+
+.login-box input:focus {
+    outline: none;
+    border-color: #00ff88;
+}
+
+.login-button {
+    width: 100%;
+    margin-top: 12px;
+    padding: 13px;
+    background: #00ff88;
+    color: black;
+    border: none;
+    border-radius: 8px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.login-error {
+    color: #ff4d4d;
+    margin-top: 12px;
+    display: none;
+}
+
+/* =========================
+   MAIN WEBSITE
+========================= */
+
+#website {
+    display: none;
+}
+
+header {
+    background: #181818;
+    padding: 20px;
+    text-align: center;
+    border-bottom: 3px solid #00ff88;
+}
+
+.logo {
+    font-size: 50px;
+    font-weight: bold;
+    color: #00ff88;
+}
+
+header h1 {
+    margin: 5px;
+}
+
+/* =========================
+   NAVIGATION
+========================= */
+
+.navigation {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 20px;
+    background: #101010;
+}
+
+.navigation button {
+    background: #181818;
+    color: white;
+    border: 2px solid #00ff88;
+    border-radius: 8px;
+    padding: 12px 20px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.navigation button:hover {
+    background: #00ff88;
+    color: black;
+}
+
+/* =========================
+   PANELS
+========================= */
+
+.panel {
+    display: none;
+    max-width: 1000px;
+    margin: auto;
+    padding: 20px;
+}
+
+.panel.active {
+    display: block;
+}
+
+.info-box {
+    background: #181818;
+    border: 1px solid #333;
+    border-radius: 12px;
+    padding: 20px;
+    margin-top: 15px;
+}
+
+/* =========================
+   STOCK MARKET
+========================= */
+
+.market-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.balance {
+    background: #181818;
+    border: 2px solid #00ff88;
+    border-radius: 10px;
+    padding: 15px 20px;
+}
+
+.balance-number {
+    color: #00ff88;
+    font-size: 24px;
+    font-weight: bold;
+}
+
+.status {
+    text-align: center;
+    color: #aaa;
+    margin: 15px;
+}
+
+.stock {
+    background: #151515;
+    border: 1px solid #333;
+    border-radius: 14px;
+    padding: 20px;
+    margin: 20px 0;
+}
+
+.stock-name {
+    font-size: 23px;
+    font-weight: bold;
+}
+
+.ticker {
+    color: #888;
+    font-size: 14px;
+}
+
+.description {
+    color: #aaa;
+    margin-top: 5px;
+}
+
+.price {
+    font-size: 32px;
+    font-weight: bold;
+    margin-top: 15px;
+}
+
+.up {
+    color: #00ff88;
+}
+
+.down {
+    color: #ff4d4d;
+}
+
+.chart {
+    width: 100%;
+    height: 230px;
+    background: #090909;
+    border-radius: 10px;
+    margin-top: 15px;
+}
+
+canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.npc {
+    background: #101010;
+    padding: 15px;
+    margin-top: 15px;
+    border-radius: 8px;
+    line-height: 1.8;
+}
+
+.buyers {
+    color: #00ff88;
+}
+
+.sellers {
+    color: #ff4d4d;
+}
+
+.neutral {
+    color: #aaa;
+}
+
+.stock-buttons {
+    margin-top: 15px;
+}
+
+.stock-buttons button {
+    background: #181818;
+    color: white;
+    border: 2px solid #00ff88;
+    border-radius: 8px;
+    padding: 11px 18px;
+    margin-right: 8px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.stock-buttons button:hover {
+    background: #00ff88;
+    color: black;
+}
+
+/* =========================
+   MAP
+========================= */
+
+.map-box {
+    height: 400px;
+    background:
+        linear-gradient(#151515 1px, transparent 1px),
+        linear-gradient(90deg, #151515 1px, transparent 1px);
+    background-size: 40px 40px;
+    border: 2px solid #333;
+    border-radius: 12px;
+    position: relative;
+    overflow: hidden;
+}
+
+.map-title {
+    text-align: center;
+    padding: 20px;
+    color: #00ff88;
+    font-weight: bold;
+}
+
+.location {
+    position: absolute;
+    background: #00ff88;
+    color: black;
+    padding: 8px;
+    border-radius: 6px;
+    font-weight: bold;
+}
+
+/* =========================
+   TEAM
+========================= */
+
+.member {
+    background: #101010;
+    border: 1px solid #333;
+    border-radius: 10px;
+    padding: 15px;
+    margin: 10px 0;
+}
+
+/* =========================
+   ACTION
+========================= */
+
+.action-button {
+    display: block;
+    width: 100%;
+    margin: 10px 0;
+    padding: 15px;
+    background: #181818;
+    color: white;
+    border: 2px solid #00ff88;
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: left;
+    font-weight: bold;
+}
+
+.action-button:hover {
+    background: #00ff88;
+    color: black;
+}
+
+/* =========================
+   COMMAND
+========================= */
+
+.command-button {
+    margin-top: 10px;
+}
+</style>
+</head>
+
+<body>
+
+
+<!-- =========================
+     LOGIN SCREEN
+========================= -->
+
+<div id="loginScreen">
+
+    <div class="login-box">
+
+        <div class="login-logo">&gt;:)</div>
+
+        <h1>THE SMILEY FACE ARMY</h1>
+
+        <p>Organization Command HQ</p>
+
+        <input
+            type="text"
+            id="username"
+            placeholder="Username"
+        >
+
+        <input
+            type="password"
+            id="password"
+            placeholder="Password"
+        >
+
+        <button
+            class="login-button"
+            onclick="login()"
+        >
+            ENTER COMMAND HQ
+        </button>
+
+        <div
+            id="loginError"
+            class="login-error"
+        >
+            ❌ Incorrect username or password.
+        </div>
+
+    </div>
+
+</div>
+
+
+<!-- =========================
+     MAIN WEBSITE
+========================= -->
+
+<div id="website">
+
+<header>
+
+    <div class="logo">&gt;:)</div>
+
+    <h1>THE SMILEY FACE ARMY</h1>
+
+    <p>Organization Command HQ</p>
+
+</header>
+
+
+<!-- =========================
+     NAVIGATION
+========================= -->
+
+<div class="navigation">
+
+    <button onclick="openPanel('team')">
+        👥 TEAM
+    </button>
+
+    <button onclick="openPanel('map')">
+        🗺️ MAP
+    </button>
+
+    <button onclick="openPanel('action')">
+        ⚡ ACTION
+    </button>
+
+    <button onclick="openPanel('stocks')">
+        📈 STOCKS
+    </button>
+
+    <button onclick="openPanel('command')">
+        🫡 COMMAND CENTER
+    </button>
+
+</div>
+
+
+<!-- =========================
+     TEAM
+========================= -->
+
+<div id="team" class="panel">
+
+    <h2>👥 TEAM</h2>
+
+    <div class="info-box">
+
+        <h3>Organization Personnel</h3>
+
+        <div class="member">
+            🫡 <b>President</b><br>
+            Supreme organization leader
+        </div>
+
+        <div class="member">
+            🛡️ <b>Security Division</b><br>
+            Protects organization facilities
+        </div>
+
+        <div class="member">
+            🔧 <b>Engineering Division</b><br>
+            Handles equipment and technology
+        </div>
+
+        <div class="member">
+            📊 <b>Economic Division</b><br>
+            Manages the organization economy
+        </div>
+
+    </div>
+
+</div>
+
+
+<!-- =========================
+     MAP
+========================= -->
+
+<div id="map" class="panel">
+
+    <h2>🗺️ WORLD MAP</h2>
+
+    <div class="map-box">
+
+        <div class="map-title">
+            SFA WORLD MAP
+        </div>
+
+        <div
+            class="location"
+            style="left:20%;top:35%;"
+        >
+            🏢 SFA HQ
+        </div>
+
+        <div
+            class="location"
+            style="left:65%;top:25%;"
+        >
+            🏙️ Sector A
+        </div>
+
+        <div
+            class="location"
+            style="left:45%;top:65%;"
+        >
+            ⛺ Sector B
+        </div>
+
+        <div
+            class="location"
+            style="left:75%;top:70%;"
+        >
+            🛰️ Research Zone
+        </div>
+
+    </div>
+
+    <div class="info-box">
+
+        <h3>🕳️ Underground Map</h3>
+
+        <p>
+            Underground facilities and hidden locations.
+        </p>
+
+    </div>
+
+</div>
+
+
+<!-- =========================
+     ACTION
+========================= -->
+
+<div id="action" class="panel">
+
+    <h2>⚡ ACTION</h2>
+
+    <div class="info-box">
+
+        <p>
+            Fictional world simulation controls.
+        </p>
+
+        <button
+            class="action-button"
+            onclick="actionMessage('Recon mission started.')"
+        >
+            🔎 START RECON MISSION
+        </button>
+
+        <button
+            class="action-button"
+            onclick="actionMessage('Supply operation started.')"
+        >
+            📦 ORGANIZE SUPPLIES
+        </button>
+
+        <button
+            class="action-button"
+            onclick="actionMessage('World simulation advanced.')"
+        >
+            🌎 ADVANCE WORLD
+        </button>
+
+        <button
+            class="action-button"
+            onclick="actionMessage('Organization status updated.')"
+        >
+            📡 CHECK WORLD STATUS
+        </button>
+
+        <p id="actionResult"></p>
+
+    </div>
+
+</div>
+
+
+<!-- =========================
+     STOCKS
+========================= -->
+
+<div id="stocks" class="panel">
+
+    <div class="market-top">
+
+        <h2>📈 SFA STOCK EXCHANGE</h2>
+
+        <div class="balance">
+
+            💰 Smiley Dollars
+
+            <div
+                class="balance-number"
+                id="balance"
+            >
+                $10,000.00
+            </div>
+
+        </div>
+
+    </div>
+
+    <div class="status">
+        🔴 MARKET OPEN — NPC investors trade every second
+    </div>
+
+    <div id="stockList"></div>
+
+</div>
+
+
+<!-- =========================
+     COMMAND CENTER
+========================= -->
+
+<div id="command" class="panel">
+
+    <h2>🫡 COMMAND CENTER</h2>
+
+    <div class="info-box">
+
+        <h3>President's Office</h3>
+
+        <p>
+            Welcome to the SFA Command Center.
+        </p>
+
+        <p>
+            Current rank:
+            <b>President</b>
+        </p>
+
+        <button
+            onclick="commandMessage()"
+        >
+            📋 REQUEST PROMOTION
+        </button>
+
+        <button
+            onclick="alert('Command communication system coming soon!')"
+        >
+            💬 CONTACT COMMAND
+        </button>
+
+        <p id="commandResult"></p>
+
+    </div>
+
+</div>
+
+</div>
+
+
+<script>
+
+/* =========================
+   LOGIN
+========================= */
+
+function login() {
+
+    const username =
+        document.getElementById("username").value;
+
+    const password =
+        document.getElementById("password").value;
+
+    if (
+        username === "President" &&
+        password === "Smfa"
+    ) {
+
+        document.getElementById("loginScreen")
+            .style.display = "none";
+
+        document.getElementById("website")
+            .style.display = "block";
+
+        openPanel("team");
+
+    } else {
+
+        document.getElementById("loginError")
+            .style.display = "block";
+
+    }
+
+}
+
+
+/* ENTER KEY LOGIN */
+
+document.addEventListener(
+    "keydown",
+    function(event) {
+
+        if (
+            event.key === "Enter" &&
+            document.getElementById("loginScreen")
+                .style.display !== "none"
+        ) {
+
+            login();
+
+        }
+
+    }
+);
+
+
+/* =========================
+   PANELS
+========================= */
+
+function openPanel(name) {
+
+    document
+        .querySelectorAll(".panel")
+        .forEach(panel => {
+
+            panel.classList.remove("active");
+
+        });
+
+    const selected =
+        document.getElementById(name);
+
+    if (selected) {
+
+        selected.classList.add("active");
+
+    }
+
+}
+
+
+/* =========================
+   ACTIONS
+========================= */
+
+function actionMessage(message) {
+
+    document.getElementById("actionResult")
+        .textContent =
+        "✅ " + message;
+
+}
+
+
+/* =========================
+   COMMAND
+========================= */
+
+function commandMessage() {
+
+    document.getElementById("commandResult")
+        .textContent =
+        "📨 Promotion request sent to Command.";
+
+}
+
+
+/* =========================
+   STOCK DATA
+========================= */
+
+const companies = {
+
+    ADI: {
+        name: "AeroDyne Industries",
+        description: "Aircraft, aviation systems and flight gear",
+        price: 120
+    },
+
+    ICD: {
+        name: "Ironclad Dynamics",
+        description: "Armored vehicles and equipment",
+        price: 85
+    },
+
+    NEX: {
+        name: "Nexora Industries",
+        description: "Everyday products and consumer goods",
+        price: 64
+    },
+
+    SFC: {
+        name: "Stellar Frontier Corp.",
+        description: "Spacecraft, satellites and space equipment",
+        price: 210
+    }
+
+};
+
+
+/* =========================
+   PLAYER
+========================= */
+
+let money = 10000;
+
+const portfolio = {
+    ADI: 0,
+    ICD: 0,
+    NEX: 0,
+    SFC: 0
+};
+
+
+/* =========================
+   HISTORY
+========================= */
+
+const history = {};
+
+for (const ticker in companies) {
+
+    history[ticker] = [];
+
+    for (let i = 0; i < 60; i++) {
+
+        history[ticker].push(
+            companies[ticker].price
+        );
+
+    }
+
+}
+
+
+/* =========================
+   NPC
+========================= */
+
+const npc = {};
+
+for (const ticker in companies) {
+
+    npc[ticker] = {
+        buyers: 0,
+        sellers: 0
+    };
+
+}
+
+
+/* =========================
+   MONEY FORMAT
+========================= */
+
+function formatMoney(value) {
+
+    return "$" +
+        value.toLocaleString(
+            "en-US",
+            {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            }
+        );
+
+}
+
+
+/* =========================
+   CHART
+========================= */
+
+function drawChart(canvas, prices) {
+
+    const ctx =
+        canvas.getContext("2d");
+
+    const width =
+        canvas.clientWidth;
+
+    const height =
+        canvas.clientHeight;
+
+    const ratio =
+        window.devicePixelRatio || 1;
+
+    canvas.width =
+        width * ratio;
+
+    canvas.height =
+        height * ratio;
+
+    ctx.setTransform(
+        ratio,
+        0,
+        0,
+        ratio,
+        0,
+        0
+    );
+
+    ctx.clearRect(
+        0,
+        0,
+        width,
+        height
+    );
+
+
+    let min =
+        Math.min(...prices);
+
+    let max =
+        Math.max(...prices);
+
+    let range =
+        max - min;
+
+    if (range === 0) {
+        range = 1;
+    }
+
+
+    ctx.strokeStyle = "#222";
+
+    for (let i = 1; i < 5; i++) {
+
+        const y =
+            height / 5 * i;
+
+        ctx.beginPath();
+
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+
+        ctx.stroke();
+
+    }
+
+
+    ctx.beginPath();
+
+    prices.forEach(
+        (price, index) => {
+
+            const x =
+                index /
+                (prices.length - 1)
+                * width;
+
+            const y =
+                height -
+                ((price - min) / range)
+                * (height - 20) -
+                10;
+
+            if (index === 0) {
+                ctx.moveTo(x, y);
+            } else {
+                ctx.lineTo(x, y);
+            }
+
+        }
+    );
+
+
+    ctx.strokeStyle =
+        prices[prices.length - 1] >= prices[0]
+        ? "#00ff88"
+        : "#ff4d4d";
+
+    ctx.lineWidth = 3;
+
+    ctx.stroke();
+
+}
+
+
+/* =========================
+   RENDER STOCKS
+========================= */
+
+function renderStocks() {
+
+    const container =
+        document.getElementById("stockList");
+
+    container.innerHTML = "";
+
+
+    for (const ticker in companies) {
+
+        const company =
+            companies[ticker];
+
+        const current =
+            company.price;
+
+        const starting =
+            history[ticker][0];
+
+        const percent =
+            ((current - starting) /
+            starting) * 100;
+
+        const positive =
+            percent >= 0;
+
+
+        let pressure;
+
+        if (
+            npc[ticker].buyers >
+            npc[ticker].sellers
+        ) {
+
+            pressure =
+                `<span class="buyers">
+                    BUYING PRESSURE 📈
+                </span>`;
+
+        } else {
+
+            pressure =
+                `<span class="sellers">
+                    SELLING PRESSURE 📉
+                </span>`;
+
+        }
+
+
+        const card =
+            document.createElement("div");
+
+        card.className = "stock";
+
+
+        card.innerHTML = `
+
+            <div class="stock-name">
+
+                ${company.name}
+
+                <span class="ticker">
+                    (${ticker})
+                </span>
+
+            </div>
+
+            <div class="description">
+                ${company.description}
+            </div>
+
+            <div class="price">
+                ${formatMoney(current)}
+            </div>
+
+            <div class="${positive ? "up" : "down"}">
+
+                ${positive ? "▲" : "▼"}
+
+                ${Math.abs(percent).toFixed(2)}%
+
+            </div>
+
+            <div class="chart">
+                <canvas></canvas>
+            </div>
+
+            <div class="npc">
+
+                👥 <b>NPC INVESTOR ACTIVITY</b>
+
+                <br>
+
+                🟢 Buyers:
+                <span class="buyers">
+                    ${npc[ticker].buyers.toLocaleString()}
+                </span>
+
+                <br>
+
+                🔴 Sellers:
+                <span class="sellers">
+                    ${npc[ticker].sellers.toLocaleString()}
+                </span>
+
+                <br>
+
+                ⚖️ Market:
+                ${pressure}
+
+                <br>
+
+                👤 Your shares:
+                ${portfolio[ticker]}
+
+            </div>
+
+            <div class="stock-buttons">
+
+                <button
+                    onclick="buy('${ticker}')"
+                >
+                    BUY 1
+                </button>
+
+                <button
+                    onclick="sell('${ticker}')"
+                >
+                    SELL 1
+                </button>
+
+            </div>
+
+        `;
+
+
+        container.appendChild(card);
+
+
+        drawChart(
+            card.querySelector("canvas"),
+            history[ticker]
+        );
+
+    }
+
+
+    document.getElementById("balance")
+        .textContent =
+        formatMoney(money);
+
+}
+
+
+/* =========================
+   MARKET UPDATE
+========================= */
+
+function updateMarket() {
+
+    for (const ticker in companies) {
+
+        const buyers =
+            Math.floor(
+                400000 +
+                Math.random() * 600000
+            );
+
+        const sellers =
+            Math.floor(
+                400000 +
+                Math.random() * 600000
+            );
+
+
+        npc[ticker].buyers =
+            buyers;
+
+        npc[ticker].sellers =
+            sellers;
+
+
+        const difference =
+            buyers - sellers;
+
+
+        const movement =
+            difference / 100000000;
+
+
+        companies[ticker].price *=
+            1 + movement;
+
+
+        if (
+            companies[ticker].price < 1
+        ) {
+
+            companies[ticker].price = 1;
+
+        }
+
+
+        history[ticker].push(
+            companies[ticker].price
+        );
+
+
+        if (
+            history[ticker].length > 60
+        ) {
+
+            history[ticker].shift();
+
+        }
+
+    }
+
+
+    renderStocks();
+
+}
+
+
+/* =========================
+   BUY
+========================= */
+
+function buy(ticker) {
+
+    const price =
+        companies[ticker].price;
+
+
+    if (money < price) {
+
+        alert(
+            "Not enough Smiley Dollars!"
+        );
+
+        return;
+
+    }
+
+
+    money -= price;
+
+    portfolio[ticker]++;
+
+    companies[ticker].price *= 1.0005;
+
+
+    history[ticker].push(
+        companies[ticker].price
+    );
+
+
+    if (
+        history[ticker].length > 60
+    ) {
+
+        history[ticker].shift();
+
+    }
+
+
+    renderStocks();
+
+}
+
+
+/* =========================
+   SELL
+========================= */
+
+function sell(ticker) {
+
+    if (portfolio[ticker] <= 0) {
+
+        alert(
+            "You don't own this stock!"
+        );
+
+        return;
+
+    }
+
+
+    const price =
+        companies[ticker].price;
+
+
+    money += price;
+
+    portfolio[ticker]--;
+
+    companies[ticker].price *= 0.9995;
+
+
+    history[ticker].push(
+        companies[ticker].price
+    );
+
+
+    if (
+        history[ticker].length > 60
+    ) {
+
+        history[ticker].shift();
+
+    }
+
+
+    renderStocks();
+
+}
+
+
+/* =========================
+   START
+========================= */
+
+renderStocks();
+
+setInterval(
+    updateMarket,
+    1000
+);
+
+</script>
+
+</body>
+</html>
