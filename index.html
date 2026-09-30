@@ -2289,7 +2289,472 @@ function sell(ticker) {
     renderStocks();
 
 }
+/* ===== SMFA PATCH v1 ===== */
 
+function sb(path, opts = {}) {
+    return fetch(SUPABASE_URL + "/rest/v1/" + path, {
+        ...opts,
+        headers: {
+            "apikey": SUPABASE_KEY,
+            "Authorization": "Bearer " + SUPABASE_KEY,
+            "Content-Type": "application/json",
+            ...(opts.headers || {})
+        }
+    });
+}
+
+const UPSERT = {
+    "Prefer": "resolution=merge-duplicates,return=minimal"
+};
+
+/* ---------- ACCOUNTS (PERSISTENT) ---------- */
+
+async function loadAccounts() {
+    try {
+        const r = await sb("accounts?select=*");
+
+        if (!r.ok) {
+            throw new Error("accounts table unavailable");
+        }
+
+        const rows = await r.json();
+
+        if (rows.length === 0) {
+            await sb("accounts", {
+                method: "POST",
+                headers: UPSERT,
+                body: JSON.stringify(
+                    Object.entries(accounts).map(
+                        ([username, a]) => ({
+                            username,
+                            ...a
+                        })
+                    )
+                )
+            });
+        } else {
+            rows.forEach(row => {
+                accounts[row.username] = {
+                    password: row.password,
+                    rank: row.rank,
+                    role: row.role
+                };
+            });
+        }
+    } catch (e) {
+        console.warn("Using local accounts:", e);
+
+        const saved = localStorage.getItem("smfaAccounts");
+
+        if (saved) {
+            Object.assign(accounts, JSON.parse(saved));
+        }
+    }
+}
+
+function saveAccount(username) {
+    localStorage.setItem(
+        "smfaAccounts",
+        JSON.stringify(accounts)
+    );
+
+    sb("accounts", {
+        method: "POST",
+        headers: UPSERT,
+        body: JSON.stringify([
+            {
+                username,
+                ...accounts[username]
+            }
+        ])
+    }).catch(console.error);
+}
+
+
+/* ---------- LOGIN ---------- */
+
+const _login = login;
+
+login = async function () {
+    await loadAccounts();
+    _login();
+};
+
+
+/* ---------- PASSWORD CHANGES ---------- */
+
+const _changePassword = changePassword;
+
+changePassword = function () {
+    if (!currentUser) return;
+
+    const before = accounts[currentUser].password;
+
+    _changePassword();
+
+    if (
+        accounts[currentUser].password !== before
+    ) {
+        saveAccount(currentUser);
+    }
+};
+
+
+/* ---------- PROMOTION SYSTEM ---------- */
+
+async function decidePromotion(
+    id,
+    sender,
+    approve
+) {
+    try {
+        if (approve) {
+            await loadAccounts();
+
+            const a = accounts[sender];
+
+            const top =
+                ranks.indexOf("Senior Commander");
+
+            const i =
+                a ? ranks.indexOf(a.rank) : -1;
+
+            if (i < 0 || i >= top) {
+                alert(
+                    sender +
+                    " can't be promoted any further."
+                );
+                return;
+            }
+
+            a.rank = ranks[i + 1];
+
+            saveAccount(sender);
+        }
+
+        await sb(
+            "promotion_messages?id=eq." +
+            encodeURIComponent(id),
+            {
+                method: "PATCH",
+
+                headers: {
+                    "Prefer": "return=minimal"
+                },
+
+                body: JSON.stringify({
+                    status: approve
+                        ? "approved"
+                        : "denied"
+                })
+            }
+        );
+
+    } catch (e) {
+        console.error(e);
+    }
+
+    renderTeam();
+    updateCommandCenter();
+    loadPromotionMessages();
+}
+
+
+/* ---------- PRESIDENT PROMOTION INBOX ---------- */
+
+loadPromotionMessages = async function () {
+
+    if (currentUser !== "President") return;
+
+    const inbox =
+        document.getElementById(
+            "promotionMessages"
+        );
+
+    if (!inbox) return;
+
+    inbox.innerHTML =
+        '<span class="inbox-loading">📡 Loading messages...</span>';
+
+    try {
+
+        const r = await sb(
+            "promotion_messages?select=*&order=created_at.desc"
+        );
+
+        if (!r.ok) {
+            throw new Error(
+                "Could not load messages."
+            );
+        }
+
+        const msgs = await r.json();
+
+        if (msgs.length === 0) {
+
+            inbox.innerHTML =
+                "<p>📭 No promotion requests yet.</p>";
+
+            return;
+        }
+
+        inbox.innerHTML = "";
+
+        msgs.forEach(m => {
+
+            const status =
+                m.status || "pending";
+
+            const rank =
+                accounts[m.sender]
+                    ? accounts[m.sender].rank
+                    : "unknown";
+
+            const d =
+                document.createElement("div");
+
+            d.className =
+                "promotion-message";
+
+            d.innerHTML = `
+                📨 <b>Promotion Request</b><br>
+                👤 From:
+                <b>${escapeHTML(m.sender)}</b>
+                (${escapeHTML(rank)})<br>
+                💬 ${escapeHTML(m.message)}<br>
+                🕒 ${escapeHTML(
+                    new Date(
+                        m.created_at
+                    ).toLocaleString()
+                )}<br>
+                📌 Status:
+                <b>${escapeHTML(
+                    status.toUpperCase()
+                )}</b>
+            `;
+
+            if (status === "pending") {
+
+                const row =
+                    document.createElement("div");
+
+                row.style.marginTop =
+                    "10px";
+
+                [
+                    ["✅ APPROVE", true],
+                    ["❌ DENY", false]
+                ].forEach(
+                    ([label, ok]) => {
+
+                        const b =
+                            document.createElement(
+                                "button"
+                            );
+
+                        b.className =
+                            "command-button";
+
+                        b.textContent =
+                            label;
+
+                        b.onclick = () =>
+                            decidePromotion(
+                                m.id,
+                                m.sender,
+                                ok
+                            );
+
+                        row.appendChild(b);
+                    }
+                );
+
+                d.appendChild(row);
+            }
+
+            inbox.appendChild(d);
+        });
+
+    } catch (e) {
+
+        console.error(e);
+
+        inbox.innerHTML =
+            "❌ Could not load promotion requests.";
+    }
+};
+
+
+/* ---------- SHARED MARKET ---------- */
+
+let lastMarketStamp = null;
+
+
+async function pushMarket() {
+
+    const now = Date.now();
+
+    lastMarketStamp = now;
+
+    const stamp =
+        new Date(now).toISOString();
+
+    const rows =
+        Object.keys(companies).map(t => ({
+            ticker: t,
+
+            price:
+                companies[t].price,
+
+            buyers:
+                npc[t].buyers,
+
+            sellers:
+                npc[t].sellers,
+
+            updated_at:
+                stamp
+        }));
+
+    try {
+
+        await sb("market", {
+            method: "POST",
+
+            headers: UPSERT,
+
+            body:
+                JSON.stringify(rows)
+        });
+
+    } catch (e) {
+
+        console.error(e);
+    }
+}
+
+
+function adoptMarket(rows) {
+
+    rows.forEach(r => {
+
+        if (!companies[r.ticker]) return;
+
+        const price =
+            Number(r.price);
+
+        companies[r.ticker].price =
+            price;
+
+        npc[r.ticker].buyers =
+            Number(r.buyers);
+
+        npc[r.ticker].sellers =
+            Number(r.sellers);
+
+        [
+            history[r.ticker],
+            stockHistory[r.ticker]
+        ].forEach(arr => {
+
+            arr.push(price);
+
+            if (arr.length > 60) {
+                arr.shift();
+            }
+        });
+    });
+
+    saveGame();
+
+    renderStocks();
+}
+
+
+/* ---------- SHARED MARKET UPDATE ---------- */
+
+const _updateMarket =
+    updateMarket;
+
+updateMarket = async function () {
+
+    if (
+        document.getElementById(
+            "website"
+        ).style.display !== "block"
+    ) {
+        return;
+    }
+
+    try {
+
+        const r =
+            await sb("market?select=*");
+
+        const rows =
+            r.ok
+                ? await r.json()
+                : [];
+
+        const stamp =
+            rows.length >= 4
+                ? Math.max(
+                    ...rows.map(
+                        x =>
+                            Date.parse(
+                                x.updated_at
+                            )
+                    )
+                )
+                : null;
+
+        if (
+            stamp !== null &&
+            stamp !== lastMarketStamp
+        ) {
+
+            lastMarketStamp =
+                stamp;
+
+            adoptMarket(rows);
+
+            return;
+        }
+
+    } catch (e) {
+
+        console.warn(
+            "Shared market offline:",
+            e
+        );
+    }
+
+    _updateMarket();
+
+    pushMarket();
+};
+
+
+/* ---------- BUY / SELL SYNC ---------- */
+
+const _buy = buy;
+
+buy = function (ticker) {
+
+    _buy(ticker);
+
+    pushMarket();
+};
+
+
+const _sell = sell;
+
+sell = function (ticker) {
+
+    _sell(ticker);
+
+    pushMarket();
+};
 
 /* ==================================================
    START
