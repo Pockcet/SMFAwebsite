@@ -672,7 +672,7 @@ canvas {
     </div>
 
     <div class="map-box" id="worldMapBox">
-        <div class="map-title" id="mapModeTitle">SFA WORLD MAP — SURFACE</div>
+        <div class="map-title" id="mapModeTitle">SMFA WORLD MAP — SURFACE</div>
 
         <img
             class="world-map"
@@ -683,18 +683,18 @@ canvas {
         <div class="map-grid"></div>
         <div class="map-vignette"></div>
 
-        <div class="location" style="left:13%;top:43%;">🏢 SFA HQ</div>
+        <div class="location" style="left:13%;top:43%;">🏢 SMFA HQ</div>
         <div class="location" style="left:51%;top:34%;">🏙️ Sector A</div>
         <div class="location" style="left:54%;top:68%;">⛺ Sector B</div>
         <div class="location" style="left:76%;top:52%;">🛰️ Research Zone</div>
 
-        <div class="map-legend">🟢 SFA location markers</div>
+        <div class="map-legend">🟢 SMFA location markers</div>
     </div>
 
     <div class="info-box">
         <h3 id="undergroundTitle">🌎 Surface Network</h3>
         <p id="undergroundDescription" class="underground-note">
-            A geographic world view showing SFA locations across the surface.
+            A geographic world view showing SMFA locations across the surface.
         </p>
         <p style="color:#666;font-size:12px;margin-bottom:0;">
             Map base: Wikimedia Commons world map, used under its stated Creative Commons license.
@@ -761,7 +761,7 @@ canvas {
 
     <div class="market-top">
 
-        <h2>📈 SFA STOCK EXCHANGE</h2>
+        <h2>📈 SMFA STOCK EXCHANGE</h2>
 
         <div class="balance">
 
@@ -802,7 +802,7 @@ canvas {
         </h3>
 
         <p>
-            Welcome to the SFA Command Center.
+            Welcome to the SMFA Command Center.
         </p>
 
         <p>
@@ -849,7 +849,7 @@ canvas {
             <h3>📨 PROMOTION REQUESTS</h3>
 
             <p>
-                Online promotion requests from SFA personnel.
+                Online promotion requests from SMFA personnel.
             </p>
 
             <div id="promotionMessages">
@@ -931,17 +931,60 @@ const accounts = {
 
     President: {
         password: "Smfa",
-        rank: "President"
+        rank: "President",
+        role: "SMFA President"
     },
 
     Soldier: {
         password: "123",
-        rank: "Soldier"
+        rank: "Recruit",
+        role: "SMFA Soldier"
     }
 
 };
 
 let currentUser = null;
+
+
+/* ==================================================
+   SMFA RANKS
+================================================== */
+
+const ranks = [
+
+    "Recruit",
+    "Senior Recruit",
+
+    "Private",
+    "Senior Private",
+
+    "Corporal",
+    "Senior Corporal",
+
+    "Sergeant",
+    "Senior Sergeant",
+
+    "Lieutenant",
+    "Senior Lieutenant",
+
+    "Captain",
+    "Senior Captain",
+
+    "Major",
+    "Senior Major",
+
+    "Colonel",
+    "Senior Colonel",
+
+    "General",
+    "Senior General",
+
+    "Commander",
+    "Senior Commander",
+
+    "President"
+
+];
 
 
 /* ==================================================
@@ -951,7 +994,7 @@ let currentUser = null;
 let money;
 
 const savedMoney =
-    localStorage.getItem("sfaMoney");
+    localStorage.getItem("smfaMoney");
 
 if (savedMoney !== null) {
 
@@ -971,7 +1014,7 @@ if (savedMoney !== null) {
 let portfolio;
 
 const savedPortfolio =
-    localStorage.getItem("sfaPortfolio");
+    localStorage.getItem("smfaPortfolio");
 
 if (savedPortfolio) {
 
@@ -1037,7 +1080,7 @@ const companies = {
 ================================================== */
 
 const savedPrices =
-    localStorage.getItem("sfaPrices");
+    localStorage.getItem("smfaPrices");
 
 if (savedPrices) {
 
@@ -1065,7 +1108,7 @@ if (savedPrices) {
 let history;
 
 const savedHistory =
-    localStorage.getItem("sfaHistory");
+    localStorage.getItem("smfaHistory");
 
 if (savedHistory) {
 
@@ -1113,6 +1156,20 @@ for (const ticker in companies) {
 
 
 /* ==================================================
+   STOCK HISTORY FOR SHARED MARKET
+================================================== */
+
+const stockHistory = {};
+
+for (const ticker in companies) {
+
+    stockHistory[ticker] =
+        [...history[ticker]];
+
+}
+
+
+/* ==================================================
    NPC MARKET
 ================================================== */
 
@@ -1135,12 +1192,12 @@ for (const ticker in companies) {
 function saveGame() {
 
     localStorage.setItem(
-        "sfaMoney",
+        "smfaMoney",
         money
     );
 
     localStorage.setItem(
-        "sfaPortfolio",
+        "smfaPortfolio",
         JSON.stringify(portfolio)
     );
 
@@ -1154,12 +1211,12 @@ function saveGame() {
     }
 
     localStorage.setItem(
-        "sfaPrices",
+        "smfaPrices",
         JSON.stringify(prices)
     );
 
     localStorage.setItem(
-        "sfaHistory",
+        "smfaHistory",
         JSON.stringify(history)
     );
 
@@ -1285,7 +1342,7 @@ function updateCommandCenter() {
         );
 
 
-    if (currentUser === "Soldier") {
+    if (currentUser !== "President") {
 
         promotionButton.style.display =
             "inline-block";
@@ -1304,6 +1361,20 @@ function updateCommandCenter() {
         currentUser === "President"
         ? "block"
         : "none";
+
+}
+
+
+/* ==================================================
+   RENDER TEAM
+================================================== */
+
+function renderTeam() {
+
+    /* Team panel remains the same static organization
+       layout. This function exists so the promotion
+       system can safely refresh the team after a rank
+       change. */
 
 }
 
@@ -1465,16 +1536,16 @@ function setMapMode(mode) {
 
     if (mode === "underground") {
         map.classList.add("underground");
-        title.textContent = "SFA WORLD MAP — UNDERGROUND";
+        title.textContent = "SMFA WORLD MAP — UNDERGROUND";
         infoTitle.textContent = "🕳️ Underground Network";
         description.textContent = "The same world geography transformed into a dark, mechanical underground command map.";
         surfaceButton.classList.remove("active");
         undergroundButton.classList.add("active");
     } else {
         map.classList.remove("underground");
-        title.textContent = "SFA WORLD MAP — SURFACE";
+        title.textContent = "SMFA WORLD MAP — SURFACE";
         infoTitle.textContent = "🌎 Surface Network";
-        description.textContent = "A geographic world view showing SFA locations across the surface.";
+        description.textContent = "A geographic world view showing SMFA locations across the surface.";
         undergroundButton.classList.remove("active");
         surfaceButton.classList.add("active");
     }
@@ -1500,7 +1571,7 @@ function actionMessage(message) {
 
 async function commandMessage() {
 
-    if (currentUser !== "Soldier") {
+    if (currentUser === "President") {
 
         return;
 
@@ -2289,6 +2360,8 @@ function sell(ticker) {
     renderStocks();
 
 }
+
+
 /* ===== SMFA PATCH v1 ===== */
 
 function sb(path, opts = {}) {
@@ -2327,7 +2400,14 @@ async function loadAccounts() {
                     Object.entries(accounts).map(
                         ([username, a]) => ({
                             username,
-                            ...a
+                            ...a,
+                            role:
+                                a.role ||
+                                (
+                                    username === "President"
+                                        ? "SMFA President"
+                                        : "SMFA Soldier"
+                                )
                         })
                     )
                 )
@@ -2364,7 +2444,14 @@ function saveAccount(username) {
         body: JSON.stringify([
             {
                 username,
-                ...accounts[username]
+                ...accounts[username],
+                role:
+                    accounts[username].role ||
+                    (
+                        username === "President"
+                            ? "SMFA President"
+                            : "SMFA Soldier"
+                    )
             }
         ])
     }).catch(console.error);
@@ -2402,56 +2489,73 @@ changePassword = function () {
 
 /* ---------- PROMOTION SYSTEM ---------- */
 
-async function decidePromotion(
-    id,
-    sender,
-    approve
-) {
+/* ===== SMFA PATCH v2: working approve/deny ===== */
+
+async function decidePromotion(id, sender, approve) {
     try {
-        if (approve) {
-            await loadAccounts();
-
-            const a = accounts[sender];
-
-            const top =
-                ranks.indexOf("Senior Commander");
-
-            const i =
-                a ? ranks.indexOf(a.rank) : -1;
-
-            if (i < 0 || i >= top) {
-                alert(
-                    sender +
-                    " can't be promoted any further."
-                );
-                return;
-            }
-
-            a.rank = ranks[i + 1];
-
-            saveAccount(sender);
+        if (id === undefined || id === null) {
+            throw new Error("promotion_messages has no 'id' column.");
         }
 
-        await sb(
-            "promotion_messages?id=eq." +
-            encodeURIComponent(id),
-            {
-                method: "PATCH",
+        let newRank = null;
 
-                headers: {
-                    "Prefer": "return=minimal"
-                },
+        if (approve) {
+            await loadAccounts();
+            const a = accounts[sender];
+            const i = a ? ranks.indexOf(a.rank) : -1;
 
-                body: JSON.stringify({
-                    status: approve
-                        ? "approved"
-                        : "denied"
-                })
+            if (i < 0) throw new Error(sender + " was not found in accounts.");
+            if (i >= ranks.indexOf("Senior Commander")) {
+                throw new Error(sender + " can't be promoted any further.");
             }
-        );
+            newRank = ranks[i + 1];
+        }
+
+        // 1. Mark the request (and confirm Supabase really accepted it)
+        const url = "promotion_messages?id=eq." + encodeURIComponent(id);
+        const r = await sb(url, {
+            method: "PATCH",
+            headers: { "Prefer": "return=representation" },
+            body: JSON.stringify({ status: approve ? "approved" : "denied" })
+        });
+
+        if (!r.ok) {
+            throw new Error("Could not update the request (" + r.status + "): " + await r.text());
+        }
+
+        const updated = await r.json();
+        if (updated.length === 0) {
+            throw new Error("Supabase blocked the update. Re-run the setup SQL.");
+        }
+
+        // 2. Promote the account
+        if (approve) {
+            accounts[sender].rank = newRank;
+            localStorage.setItem("smfaAccounts", JSON.stringify(accounts));
+
+            const p = await sb("accounts", {
+                method: "POST",
+                headers: UPSERT,
+                body: JSON.stringify([{ username: sender, ...accounts[sender] }])
+            });
+
+            if (!p.ok) {
+                // undo the approval so it can be tried again
+                await sb(url, {
+                    method: "PATCH",
+                    body: JSON.stringify({ status: "pending" })
+                });
+                throw new Error("Saving the new rank failed (" + p.status + "): " + await p.text());
+            }
+        }
+
+        alert(approve
+            ? "✅ " + sender + " promoted to " + newRank + "!"
+            : "❌ Promotion request denied.");
 
     } catch (e) {
         console.error(e);
+        alert("⚠️ " + e.message);
     }
 
     renderTeam();
@@ -2505,11 +2609,6 @@ loadPromotionMessages = async function () {
             const status =
                 m.status || "pending";
 
-            const rank =
-                accounts[m.sender]
-                    ? accounts[m.sender].rank
-                    : "unknown";
-
             const d =
                 document.createElement("div");
 
@@ -2519,8 +2618,7 @@ loadPromotionMessages = async function () {
             d.innerHTML = `
                 📨 <b>Promotion Request</b><br>
                 👤 From:
-                <b>${escapeHTML(m.sender)}</b>
-                (${escapeHTML(rank)})<br>
+                <b>${escapeHTML(m.sender)}</b><br>
                 💬 ${escapeHTML(m.message)}<br>
                 🕒 ${escapeHTML(
                     new Date(
@@ -2541,33 +2639,43 @@ loadPromotionMessages = async function () {
                 row.style.marginTop =
                     "10px";
 
-                [
-                    ["✅ APPROVE", true],
-                    ["❌ DENY", false]
-                ].forEach(
-                    ([label, ok]) => {
 
-                        const b =
-                            document.createElement(
-                                "button"
-                            );
+                const approve =
+                    document.createElement("button");
 
-                        b.className =
-                            "command-button";
+                approve.className =
+                    "command-button";
 
-                        b.textContent =
-                            label;
+                approve.textContent =
+                    "✅ APPROVE";
 
-                        b.onclick = () =>
-                            decidePromotion(
-                                m.id,
-                                m.sender,
-                                ok
-                            );
+                approve.onclick = () =>
+                    decidePromotion(
+                        m.id,
+                        m.sender,
+                        true
+                    );
 
-                        row.appendChild(b);
-                    }
-                );
+
+                const deny =
+                    document.createElement("button");
+
+                deny.className =
+                    "command-button";
+
+                deny.textContent =
+                    "❌ DENY";
+
+                deny.onclick = () =>
+                    decidePromotion(
+                        m.id,
+                        m.sender,
+                        false
+                    );
+
+
+                row.appendChild(approve);
+                row.appendChild(deny);
 
                 d.appendChild(row);
             }
@@ -2755,6 +2863,7 @@ sell = function (ticker) {
 
     pushMarket();
 };
+
 
 /* ==================================================
    START
