@@ -2864,7 +2864,393 @@ sell = function (ticker) {
     pushMarket();
 };
 
+/* ===== SMFA PATCH v3: CREATE ACCOUNT ===== */
 
+(function buildCreateAccountUI() {
+    const box = document.querySelector(".login-box");
+    if (!box) return;
+
+    const toggle = document.createElement("button");
+    toggle.textContent = "➕ CREATE ACCOUNT";
+    toggle.style.cssText =
+        "background:none;border:none;color:#00ff88;text-decoration:underline;" +
+        "cursor:pointer;margin-top:16px;font-size:14px;font-weight:bold;";
+
+    const form = document.createElement("div");
+    form.style.display = "none";
+    form.innerHTML = `
+        <h3 style="color:#00ff88;margin:18px 0 0;">NEW RECRUIT REGISTRATION</h3>
+        <input type="text" id="newAccUser" placeholder="Choose a username" maxlength="16" autocomplete="off">
+        <input type="password" id="newAccPass" placeholder="Choose a password">
+        <input type="password" id="newAccPass2" placeholder="Confirm password">
+        <button class="login-button" id="newAccSubmit">ENLIST</button>
+        <div id="newAccMsg" style="margin-top:12px;"></div>`;
+
+    box.appendChild(toggle);
+    box.appendChild(form);
+
+    toggle.onclick = () => {
+        const open = form.style.display === "none";
+        form.style.display = open ? "block" : "none";
+        toggle.textContent = open ? "⬅️ BACK TO LOGIN" : "➕ CREATE ACCOUNT";
+    };
+
+    document.getElementById("newAccSubmit").onclick = createAccount;
+
+    // Enter inside the form creates the account instead of triggering login
+    form.addEventListener("keydown", e => {
+        if (e.key === "Enter") {
+            e.stopPropagation();
+            createAccount();
+        }
+    });
+})();
+
+async function createAccount() {
+    const msg = document.getElementById("newAccMsg");
+    const say = (text, ok) => {
+        msg.textContent = text;
+        msg.className = ok ? "success" : "error";
+    };
+
+    const username = document.getElementById("newAccUser").value.trim();
+    const pass = document.getElementById("newAccPass").value;
+    const pass2 = document.getElementById("newAccPass2").value;
+
+    if (!/^[A-Za-z0-9_]{3,16}$/.test(username)) {
+        return say("❌ Username must be 3–16 letters, numbers or underscores.");
+    }
+    if (["__proto__", "constructor", "prototype"].includes(username.toLowerCase())) {
+        return say("❌ That username isn't allowed.");
+    }
+    if (pass.length < 4) {
+        return say("❌ Password must be at least 4 characters.");
+    }
+    if (pass !== pass2) {
+        return say("❌ Passwords do not match.");
+    }
+
+    say("📡 Creating account...", true);
+
+    try {
+        await loadAccounts();
+
+        if (Object.keys(accounts).some(n => n.toLowerCase() === username.toLowerCase())) {
+            return say("❌ That username is already taken.");
+        }
+
+        const r = await sb("accounts", {
+            method: "POST",
+            headers: { "Prefer": "return=minimal" },
+            body: JSON.stringify([{
+                username: username,
+                password: pass,
+                rank: "Recruit",
+                role: "SMFA Soldier"
+            }])
+        });
+
+        if (r.status === 409) {
+            return say("❌ That username is already taken.");
+        }
+        if (!r.ok) {
+            throw new Error(r.status + ": " + await r.text());
+        }
+
+        accounts[username] = { password: pass, rank: "Recruit", role: "SMFA Soldier" };
+        localStorage.setItem("smfaAccounts", JSON.stringify(accounts));
+
+        say("✅ Account created! Logging you in...", true);
+
+        document.getElementById("username").value = username;
+        document.getElementById("password").value = pass;
+        document.getElementById("newAccPass").value = "";
+        document.getElementById("newAccPass2").value = "";
+        login();
+
+    } catch (e) {
+        console.error(e);
+        say("❌ Could not create account. Check your connection.");
+    }
+}
+
+/* ---- Let ALL non-President accounts request promotions ---- */
+
+const _updateCommandCenter = updateCommandCenter;
+updateCommandCenter = function () {
+    _updateCommandCenter();
+    if (!currentUser) return;
+
+    if (currentUser !== "President") {
+        document.getElementById("promotionButton").style.display = "inline-block";
+        document.getElementById("officeTitle").textContent = currentUser + "'s Office";
+    }
+};
+
+commandMessage = async function () {
+    if (!currentUser || currentUser === "President") return;
+
+    const result = document.getElementById("commandResult");
+    result.textContent = "📡 Sending promotion request...";
+
+    try {
+        const response = await sb("promotion_messages", {
+            method: "POST",
+            headers: { "Prefer": "return=minimal" },
+            body: JSON.stringify({
+                sender: currentUser,
+                message: currentUser + " has requested a promotion."
+            })
+        });
+
+        if (!response.ok) throw new Error("Database request failed.");
+
+        result.textContent = "✅ Promotion request sent to the President!";
+        result.className = "success";
+    } catch (error) {
+        console.error(error);
+        result.textContent = "❌ Could not send promotion request.";
+        result.className = "error";
+    }
+};
+    /* ===== SMFA PATCH v4: CHOOSE RANK + PROMOTION ANIMATION ===== */
+
+(function addPromotionStyles() {
+    const s = document.createElement("style");
+    s.textContent = `
+    #promoOverlay{position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.88);
+        display:flex;align-items:center;justify-content:center;overflow:hidden;
+        animation:promoFade .4s ease}
+    .promo-card{position:relative;text-align:center;background:#181818;
+        border:2px solid #00ff88;border-radius:18px;padding:35px 30px;
+        max-width:420px;width:90%;box-shadow:0 0 60px rgba(0,255,136,.45);
+        animation:promoPop .7s cubic-bezier(.2,1.6,.4,1)}
+    .promo-logo{font-size:60px;font-weight:bold;color:#00ff88;
+        animation:promoPulse 1.2s infinite}
+    .promo-title{font-size:30px;font-weight:bold;letter-spacing:3px;
+        margin:8px 0;color:#f1c40f}
+    .promo-old{color:#888;text-decoration:line-through;margin-top:15px}
+    .promo-new{font-size:26px;font-weight:bold;color:#00ff88;margin:10px 0 22px}
+    .promo-bit{position:absolute;top:-40px;font-size:26px;pointer-events:none;
+        animation:promoFall linear forwards}
+    .promo-select{background:#0d0d0d;color:white;border:1px solid #00ff88;
+        border-radius:6px;padding:9px;margin-right:8px;font-size:14px}
+    @keyframes promoFade{from{opacity:0}to{opacity:1}}
+    @keyframes promoPop{from{transform:scale(.3);opacity:0}to{transform:scale(1);opacity:1}}
+    @keyframes promoPulse{50%{transform:scale(1.15);text-shadow:0 0 25px #00ff88}}
+    @keyframes promoFall{to{transform:translateY(110vh) rotate(540deg)}}`;
+    document.head.appendChild(s);
+})();
+
+/* ---------- PROMOTION ANIMATION ---------- */
+
+function showPromotion(oldRank, newRank) {
+    const existing = document.getElementById("promoOverlay");
+    if (existing) existing.remove();
+
+    const o = document.createElement("div");
+    o.id = "promoOverlay";
+    o.innerHTML = `
+        <div class="promo-card">
+            <div class="promo-logo">&gt;:)</div>
+            <div class="promo-title">PROMOTED!</div>
+            <div>Congratulations, <b>${escapeHTML(currentUser)}</b></div>
+            <div class="promo-old">${escapeHTML(oldRank)}</div>
+            <div>⬇️</div>
+            <div class="promo-new">🎖️ ${escapeHTML(newRank)}</div>
+            <button class="login-button">SALUTE 🫡</button>
+        </div>`;
+
+    const bits = ["😀", "🎖️", "⭐", ">:)"];
+    for (let i = 0; i < 40; i++) {
+        const b = document.createElement("span");
+        b.className = "promo-bit";
+        b.textContent = bits[i % bits.length];
+        b.style.left = Math.random() * 100 + "%";
+        b.style.animationDuration = (2.5 + Math.random() * 2.5) + "s";
+        b.style.animationDelay = (Math.random() * 2) + "s";
+        o.appendChild(b);
+    }
+
+    o.querySelector("button").onclick = () => o.remove();
+    document.body.appendChild(o);
+}
+
+function checkPromotion() {
+    if (!currentUser || currentUser === "President" || !accounts[currentUser]) return;
+
+    const key = "smfaSeenRank_" + currentUser;
+    const now = accounts[currentUser].rank;
+    const seen = localStorage.getItem(key);
+
+    if (seen === null) {
+        localStorage.setItem(key, now);   // first time here: no animation
+        return;
+    }
+    if (ranks.indexOf(now) > ranks.indexOf(seen)) {
+        localStorage.setItem(key, now);
+        showPromotion(seen, now);
+    } else if (seen !== now) {
+        localStorage.setItem(key, now);
+    }
+}
+
+let rankWatcher = null;
+
+const _loginV4 = login;
+login = async function () {
+    await _loginV4();
+    if (!currentUser) return;
+
+    checkPromotion();
+
+    if (!rankWatcher) {
+        rankWatcher = setInterval(async () => {
+            if (!currentUser) return;
+            await loadAccounts();
+            updateCommandCenter();
+            renderTeam();
+            checkPromotion();
+        }, 8000);
+    }
+};
+
+/* ---------- PRESIDENT CHOOSES THE RANK ---------- */
+
+async function decidePromotion(id, sender, approve, targetRank) {
+    try {
+        if (id === undefined || id === null) {
+            throw new Error("promotion_messages has no 'id' column.");
+        }
+
+        if (approve) {
+            await loadAccounts();
+            const a = accounts[sender];
+            if (!a) throw new Error(sender + " was not found in accounts.");
+
+            const top = ranks.indexOf("Senior Commander");
+            const cur = ranks.indexOf(a.rank);
+            const tgt = ranks.indexOf(targetRank);
+
+            if (tgt <= cur) throw new Error("Pick a rank higher than " + a.rank + ".");
+            if (tgt > top)  throw new Error("That rank can't be granted.");
+        }
+
+        const url = "promotion_messages?id=eq." + encodeURIComponent(id);
+        const r = await sb(url, {
+            method: "PATCH",
+            headers: { "Prefer": "return=representation" },
+            body: JSON.stringify({ status: approve ? "approved" : "denied" })
+        });
+
+        if (!r.ok) throw new Error("Could not update the request (" + r.status + "): " + await r.text());
+        if ((await r.json()).length === 0) throw new Error("Supabase blocked the update. Re-run the setup SQL.");
+
+        if (approve) {
+            accounts[sender].rank = targetRank;
+            localStorage.setItem("smfaAccounts", JSON.stringify(accounts));
+
+            const p = await sb("accounts", {
+                method: "POST",
+                headers: UPSERT,
+                body: JSON.stringify([{ username: sender, ...accounts[sender] }])
+            });
+
+            if (!p.ok) {
+                await sb(url, { method: "PATCH", body: JSON.stringify({ status: "pending" }) });
+                throw new Error("Saving the new rank failed (" + p.status + "): " + await p.text());
+            }
+        }
+
+        alert(approve
+            ? "✅ " + sender + " promoted to " + targetRank + "!"
+            : "❌ Promotion request denied.");
+
+    } catch (e) {
+        console.error(e);
+        alert("⚠️ " + e.message);
+    }
+
+    renderTeam();
+    updateCommandCenter();
+    loadPromotionMessages();
+}
+
+loadPromotionMessages = async function () {
+    if (currentUser !== "President") return;
+    const inbox = document.getElementById("promotionMessages");
+    if (!inbox) return;
+
+    inbox.innerHTML = '<span class="inbox-loading">📡 Loading messages...</span>';
+
+    try {
+        await loadAccounts();
+        const r = await sb("promotion_messages?select=*&order=created_at.desc");
+        if (!r.ok) throw new Error("Could not load messages.");
+        const msgs = await r.json();
+
+        if (msgs.length === 0) {
+            inbox.innerHTML = "<p>📭 No promotion requests yet.</p>";
+            return;
+        }
+        inbox.innerHTML = "";
+
+        const top = ranks.indexOf("Senior Commander");
+
+        msgs.forEach(m => {
+            const status = m.status || "pending";
+            const acc = accounts[m.sender];
+            const d = document.createElement("div");
+            d.className = "promotion-message";
+            d.innerHTML = `
+                📨 <b>Promotion Request</b><br>
+                👤 From: <b>${escapeHTML(m.sender)}</b>
+                (${escapeHTML(acc ? acc.rank : "unknown")})<br>
+                💬 ${escapeHTML(m.message)}<br>
+                🕒 ${escapeHTML(new Date(m.created_at).toLocaleString())}<br>
+                📌 Status: <b>${escapeHTML(status.toUpperCase())}</b>`;
+
+            if (status === "pending") {
+                const row = document.createElement("div");
+                row.style.marginTop = "10px";
+
+                const cur = acc ? ranks.indexOf(acc.rank) : -1;
+
+                if (cur < 0 || cur >= top) {
+                    row.textContent = "⚠️ This person can't be promoted further.";
+                } else {
+                    const sel = document.createElement("select");
+                    sel.className = "promo-select";
+                    for (let i = cur + 1; i <= top; i++) {
+                        const opt = document.createElement("option");
+                        opt.value = ranks[i];
+                        opt.textContent = ranks[i];
+                        sel.appendChild(opt);
+                    }
+                    row.appendChild(sel);
+
+                    const ok = document.createElement("button");
+                    ok.className = "command-button";
+                    ok.textContent = "✅ PROMOTE";
+                    ok.onclick = () => decidePromotion(m.id, m.sender, true, sel.value);
+                    row.appendChild(ok);
+                }
+
+                const no = document.createElement("button");
+                no.className = "command-button";
+                no.textContent = "❌ DENY";
+                no.onclick = () => decidePromotion(m.id, m.sender, false);
+                row.appendChild(no);
+
+                d.appendChild(row);
+            }
+            inbox.appendChild(d);
+        });
+    } catch (e) {
+        console.error(e);
+        inbox.innerHTML = "❌ Could not load promotion requests.";
+    }
+};
 /* ==================================================
    START
 ================================================== */
