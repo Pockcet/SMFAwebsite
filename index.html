@@ -5756,6 +5756,145 @@ openPanel = async function (name) {
         renderWarRoom(true);
     }
 };
+    /* ===== SMFA PATCH v17: HOME UPDATE LOG + REMOVE "WAR UPDATE" FROM COMING SOON ===== */
+
+/* ---- ADD NEW ENTRIES AT THE TOP OF THIS LIST ---- */
+const UPDATE_LOG = [
+    { v: "v17", title: "Home update log", items: [
+        "Added this Update Log to the Home page.",
+        "Removed \"War update\" from Coming Soon, since the war system is now live."
+    ]},
+    { v: "v16", title: "Commander team + War Room", items: [
+        "New Commander team. It is reserved for the President and nobody else can join.",
+        "New company: Sovereign Command Corp. (CMD), owned by the Commander team.",
+        "New 🫡 WAR ROOM tab (President only) with a Strategy Planner. Save strategies and launch them.",
+        "Only the President can choose which nation to attack. Branch leaders supply and build units."
+    ]},
+    { v: "v15", title: "War update (surface nations)", items: [
+        "New ⚔️ WAR page. Team warehouses are shared and saved in Supabase.",
+        "Buy or donate materials. Leaders build units: Fighters, Tank Squads, Warships and Strike Satellites.",
+        "Timed battles against the 17 nations. Recon shows a nation's power and weak branch.",
+        "First win over a nation gives a random named upgrade (capped at 100%). Repeat wins give materials.",
+        "Tiers unlock in order, and conquered nations turn green on the map."
+    ]},
+    { v: "v14", title: "Working actions", items: [
+        "Recon, Organize Supplies, Advance World and Check World Status now work, with costs and cooldowns.",
+        "Nations have difficulty tiers. Materials: Fuel, Ammo, Steel and Electronics.",
+        "Recent Activity log in the Action panel."
+    ]},
+    { v: "v13", title: "Supporting teams", items: [
+        "Join a Supporting Team at any rank. Leading one needs Sergeant or higher.",
+        "Your original team is now called your Main Team."
+    ]},
+    { v: "v12", title: "Ranks & salaries guide", items: [
+        "Ranks and salaries listed on the Home page, with your current rank highlighted."
+    ]},
+    { v: "v11", title: "Home page", items: [
+        "New Home page with your status card and a guide to every section."
+    ]},
+    { v: "v10", title: "Map update", items: [
+        "Antarctica drawn as SMFA territory, with 17 other nations labelled.",
+        "6 clickable SMFA bases in Antarctica."
+    ]},
+    { v: "v9.5", title: "Same market on every device", items: [
+        "One device runs the market and the others copy it, so prices match."
+    ]},
+    { v: "v8", title: "Cloud wallets", items: [
+        "Money, shares and the payday timer are saved to Supabase and synced across devices."
+    ]},
+    { v: "v7", title: "Economy", items: [
+        "Payday every 10 minutes: rank salary, 2% dividends on shares, and a company-leader bonus.",
+        "Each account now has its own wallet."
+    ]},
+    { v: "v6", title: "Team leaders & company ownership", items: [
+        "The President appoints team leaders.",
+        "Airforce, Land Division, Navy and Space Force each own a company."
+    ]},
+    { v: "v5", title: "Team selection", items: [
+        "Choose a team from Senior Sergeant upward."
+    ]},
+    { v: "v4", title: "Promotions", items: [
+        "The President picks which rank to promote to.",
+        "Full-screen PROMOTED! animation for the promoted player."
+    ]},
+    { v: "v3", title: "Create account", items: [
+        "New players can create an account from the login screen and start as Recruit."
+    ]},
+    { v: "v2", title: "Clearer errors", items: [
+        "Approve and deny show real error messages instead of failing silently."
+    ]},
+    { v: "v1", title: "Foundation", items: [
+        "Accounts saved online (Supabase), a shared market, and the first promotion approvals."
+    ]}
+];
+
+(function addUpdateLogStyles() {
+    const s = document.createElement("style");
+    s.textContent = `
+    .ul-entry{background:#101010;border:1px solid #333;border-left:3px solid #333;
+        border-radius:8px;margin:6px 0;padding:0;}
+    .ul-entry[open]{border-left-color:#00ff88;}
+    .ul-entry summary{cursor:pointer;padding:11px 14px;color:#ccc;list-style:none;}
+    .ul-entry summary::-webkit-details-marker{display:none;}
+    .ul-entry summary::before{content:"▸ ";color:#00ff88;}
+    .ul-entry[open] summary::before{content:"▾ ";}
+    .ul-entry .ul-v{color:#00ff88;}
+    .ul-entry ul{margin:0;padding:0 14px 12px 34px;}`;
+    document.head.appendChild(s);
+})();
+
+function buildUpdateLog() {
+    if (document.getElementById("updateLogBox")) return;
+
+    const home = document.getElementById("home");
+    if (!home) return;
+
+    const box = document.createElement("div");
+    box.className = "info-box";
+    box.id = "updateLogBox";
+
+    let html = '<h3>📜 Update Log</h3>' +
+        '<p style="color:#aaa;margin-top:0;">What changed in each update. Newest first. ' +
+        'Tap a version to open it.</p>';
+
+    UPDATE_LOG.forEach((u, i) => {
+        html += '<details class="ul-entry"' + (i === 0 ? " open" : "") + '>' +
+            '<summary><b class="ul-v">' + escapeHTML(u.v) + '</b> — ' + escapeHTML(u.title) + '</summary>' +
+            '<ul class="home-list">' +
+            u.items.map(x => "<li>" + escapeHTML(x) + "</li>").join("") +
+            '</ul></details>';
+    });
+
+    box.innerHTML = html;
+
+    const target = Array.from(home.querySelectorAll(".info-box")).find(el => {
+        const h = el.querySelector("h3");
+        return h && h.textContent.includes("Coming Soon");
+    });
+
+    if (target) home.insertBefore(box, target);
+    else home.appendChild(box);
+}
+
+function removeWarComingSoon() {
+    const home = document.getElementById("home");
+    if (!home) return;
+
+    home.querySelectorAll(".info-box").forEach(box => {
+        const h = box.querySelector("h3");
+        if (!h || !h.textContent.includes("Coming Soon")) return;
+        box.querySelectorAll("li").forEach(li => {
+            if (li.textContent.includes("War update")) li.remove();
+        });
+    });
+}
+
+const _renderHomeV17 = renderHome;
+renderHome = function () {
+    _renderHomeV17();
+    buildUpdateLog();
+    removeWarComingSoon();
+};
 /* ==================================================
    START
 ================================================== */
