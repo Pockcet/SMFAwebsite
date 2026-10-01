@@ -3420,6 +3420,221 @@ renderTeam = function () {
         );
     });
 };
+    /* ===== SMFA PATCH v6: TEAM LEADERS + STOCK OWNERSHIP ===== */
+
+const TEAM_STOCKS = {
+    "Airforce": "ADI",
+    "Land Division": "ICD",
+    "Navy": "NEX",
+    "Space Force": "SFC"
+};
+
+let teamLeaders = JSON.parse(localStorage.getItem("smfaLeaders") || "{}");
+
+async function loadTeamLeaders() {
+    try {
+        const r = await sb("team_leaders?select=*");
+        if (!r.ok) throw new Error("team_leaders unavailable");
+        const rows = await r.json();
+        teamLeaders = {};
+        rows.forEach(x => { teamLeaders[x.team] = x.leader; });
+        localStorage.setItem("smfaLeaders", JSON.stringify(teamLeaders));
+    } catch (e) {
+        console.warn("Using saved leaders:", e);
+    }
+}
+
+const _loadAccountsV6 = loadAccounts;
+loadAccounts = async function () {
+    await _loadAccountsV6();
+    await loadTeamLeaders();
+};
+
+// A leader only counts while they are still on that team.
+function leaderOf(team) {
+    const u = teamLeaders[team];
+    return (u && accounts[u] && accounts[u].team === team) ? u : null;
+}
+
+function ownerLine(ticker) {
+    const team = Object.keys(TEAM_STOCKS).find(t => TEAM_STOCKS[t] === ticker);
+    if (!team) return "";
+    const leader = leaderOf(team);
+    return leader
+        ? "👑 Owner: <b>" + escapeHTML(leader) + "</b> — " + escapeHTML(teamLabel(team)) + " leader"
+        : "👑 Owned by " + escapeHTML(teamLabel(team)) + " (leader seat vacant)";
+}
+
+/* ---------- Owner line on every stock card ---------- */
+
+const _renderStocksV6 = renderStocks;
+renderStocks = function () {
+    _renderStocksV6();
+
+    document.querySelectorAll("#stockList .stock").forEach(card => {
+        const t = card.querySelector(".ticker");
+        const desc = card.querySelector(".description");
+        if (!t || !desc) return;
+        const ticker = t.textContent.replace(/[()\s]/g, "");
+        desc.insertAdjacentHTML(
+            "afterend",
+            '<div class="description" style="color:#f1c40f;">' + ownerLine(ticker) + "</div>"
+        );
+    });
+};
+
+/* ---------- Teams & Leaders list in the Team panel ---------- */
+
+const _renderTeamV6 = renderTeam;
+renderTeam = function () {
+    _renderTeamV6();
+
+    const c = document.getElementById("onlinePersonnel");
+    if (!c) return;
+
+    c.insertAdjacentHTML("beforeend", "<h3>🏴 Teams & Leaders</h3>");
+
+    TEAMS.forEach(t => {
+        const leader = leaderOf(t.name);
+        const ticker = TEAM_STOCKS[t.name];
+        const el = document.createElement("div");
+        el.className = "member";
+        el.innerHTML =
+            t.icon + " <b>" + escapeHTML(t.name) + "</b><br>" +
+            "👑 Leader: <b>" + (leader ? escapeHTML(leader) : "Vacant") + "</b><br>" +
+            "📈 " + (ticker
+                ? "Owns <b>" + escapeHTML(companies[ticker].name) + "</b> (" + ticker + ")"
+                : "No company");
+        c.appendChild(el);
+    });
+};
+
+/* ---------- President-only: appoint leaders ---------- */
+
+(function buildLeaderAdmin() {
+    const anchor = document.getElementById("teamPickerBox");
+    if (!anchor) return;
+
+    const box = document.createElement("div");
+    box.className = "account-section";
+    box.id = "leaderAdminBox";
+    box.style.display = "none";
+    box.innerHTML = `
+        <h3>👑 Appoint Team Leaders</h3>
+        <p>Leaders must be members of the team. Airforce, Land Division, Navy and Space Force
+           leaders own AeroDyne, Ironclad, Nexora and Stellar.</p>
+        <div id="leaderRows"></div>
+        <p id="leaderResult"></p>`;
+    anchor.parentNode.insertBefore(box, anchor);
+})();
+
+function renderLeaderAdmin() {
+    const box = document.getElementById("leaderAdminBox");
+    if (!box) return;
+
+    const show = currentUser === "President";
+    box.style.display = show ? "block" : "none";
+    if (!show) return;
+
+    const rows = document.getElementById("leaderRows");
+    if (rows.contains(document.activeElement)) return; // don't disturb a dropdown mid-choice
+    rows.innerHTML = "";
+
+    TEAMS.forEach(t => {
+        const row = document.createElement("div");
+        row.style.margin = "10px 0";
+
+        const label = document.createElement("div");
+        const ticker = TEAM_STOCKS[t.name];
+        label.innerHTML = t.icon + " <b>" + escapeHTML(t.name) + "</b>" +
+            (ticker ? " — owns " + ticker : "");
+        row.appendChild(label);
+
+        const sel = document.createElement("select");
+        sel.className = "promo-select";
+        sel.style.marginTop = "6px";
+
+        const vacant = document.createElement("option");
+        vacant.value = "";
+        vacant.textContent = "— Vacant —";
+        sel.appendChild(vacant);
+
+        Object.keys(accounts)
+            .filter(u => accounts[u].team === t.name)
+            .forEach(u => {
+                const o = document.createElement("option");
+                o.value = u;
+                o.textContent = u + " (" + accounts[u].rank + ")";
+                sel.appendChild(o);
+            });
+
+        sel.value = leaderOf(t.name) || "";
+        row.appendChild(sel);
+
+        const btn = document.createElement("button");
+        btn.className = "command-button";
+        btn.textContent = "SET LEADER";
+        btn.onclick = () => setLeader(t.name, sel.value);
+        row.appendChild(btn);
+
+        rows.appendChild(row);
+    });
+}
+
+async function setLeader(team, username) {
+    const msg = document.getElementById("leaderResult");
+    const say = (text, ok) => {
+        msg.textContent = text;
+        msg.className = ok ? "success" : "error";
+    };
+
+    if (currentUser !== "President") return say("❌ Only the President can appoint leaders.");
+
+    say("📡 Saving...", true);
+
+    try {
+        await loadAccounts();
+        let r;
+
+        if (username) {
+            if (!accounts[username] || accounts[username].team !== team) {
+                throw new Error(username + " is not on " + team + ".");
+            }
+            r = await sb("team_leaders", {
+                method: "POST",
+                headers: UPSERT,
+                body: JSON.stringify([{ team, leader: username }])
+            });
+        } else {
+            r = await sb("team_leaders?team=eq." + encodeURIComponent(team), {
+                method: "DELETE"
+            });
+        }
+
+        if (!r.ok) throw new Error(r.status + ": " + await r.text());
+
+        if (username) teamLeaders[team] = username; else delete teamLeaders[team];
+        localStorage.setItem("smfaLeaders", JSON.stringify(teamLeaders));
+
+        say(username
+            ? "✅ " + username + " is now the " + team + " leader!"
+            : "✅ " + team + " leader seat is now vacant.", true);
+
+        renderLeaderAdmin();
+        renderTeam();
+        renderStocks();
+
+    } catch (e) {
+        console.error(e);
+        say("⚠️ " + e.message + " (Did you run the SQL?)");
+    }
+}
+
+const _updateCommandCenterV6 = updateCommandCenter;
+updateCommandCenter = function () {
+    _updateCommandCenterV6();
+    renderLeaderAdmin();
+};
 /* ==================================================
    START
 ================================================== */
