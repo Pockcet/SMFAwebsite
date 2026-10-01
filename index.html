@@ -4126,6 +4126,121 @@ updateMarket = async function () {
     }
     mkBusy = false;
 };
+    /* ===== SMFA PATCH v10: ANTARCTICA + COUNTRIES + BASES ===== */
+
+(function buildWorld() {
+    const box = document.getElementById("worldMapBox");
+    if (!box) return;
+
+    /* hide the old placeholder markers (hidden, not deleted) */
+    box.querySelectorAll(".location").forEach(el => el.style.display = "none");
+
+    /* Antarctica landmass */
+    const ant = document.createElement("div");
+    ant.style.cssText =
+        "position:absolute;left:0;right:0;bottom:0;height:17%;z-index:2;pointer-events:none;";
+    ant.innerHTML = `
+        <svg viewBox="0 0 100 17" preserveAspectRatio="none"
+             style="width:100%;height:100%;display:block;">
+            <path d="M0,17 L0,9 Q6,5 12,7 T26,4 T40,7 T54,3 T68,6 T82,3 T100,6 L100,17 Z"
+                  fill="rgba(0,255,136,0.20)" stroke="#00ff88" stroke-width="0.4"
+                  vector-effect="non-scaling-stroke"/>
+        </svg>
+        <div style="position:absolute;left:12px;bottom:4px;color:#00ff88;font-size:11px;
+                    font-weight:bold;letter-spacing:1px;">
+            🧊 ANTARCTICA — SMFA TERRITORY
+        </div>`;
+    box.insertBefore(ant, box.querySelector(".map-grid"));
+
+    /* other countries (approximate positions: tweak left/top to nudge) */
+    const COUNTRIES = [
+        ["Canada", 22, 17], ["USA", 20, 30], ["Mexico", 18, 42],
+        ["Brazil", 32, 58], ["Argentina", 29, 72],
+        ["UK", 46, 21], ["France", 48, 27], ["Russia", 68, 17],
+        ["Egypt", 54, 38], ["Nigeria", 50, 50], ["South Africa", 55, 70],
+        ["Saudi Arabia", 60, 40], ["India", 68, 44], ["China", 76, 32],
+        ["Japan", 86, 34], ["Indonesia", 79, 55], ["Australia", 84, 67]
+    ];
+
+    COUNTRIES.forEach(([name, left, top]) => {
+        const c = document.createElement("div");
+        c.textContent = name;
+        c.style.cssText =
+            "position:absolute;z-index:4;transform:translate(-50%,-50%);" +
+            "left:" + left + "%;top:" + top + "%;" +
+            "background:rgba(8,16,13,0.8);color:#9fb3a8;border:1px solid #3a4a42;" +
+            "border-radius:5px;padding:3px 7px;font-size:11px;white-space:nowrap;" +
+            "pointer-events:none;";
+        box.appendChild(c);
+    });
+
+    /* SMFA bases in Antarctica */
+    const BASES = [
+        { id: "air",   label: "✈️ Airforce Base",           left: 24, top: 85, team: "Airforce" },
+        { id: "space", label: "🚀 Stellar Base",            left: 37, top: 94, team: "Space Force" },
+        { id: "main",  label: "🏢 Main Base",               left: 50, top: 87, team: null, main: true },
+        { id: "def",   label: "🛡️ Defensive Division Base", left: 63, top: 94, team: "Defensive Division" },
+        { id: "land",  label: "🪖 Land Division Base",      left: 76, top: 85, team: "Land Division" },
+        { id: "navy",  label: "⚓ Navy Base",               left: 89, top: 93, team: "Navy" }
+    ];
+
+    BASES.forEach(b => {
+        const el = document.createElement("div");
+        el.className = "location";
+        el.textContent = b.label;
+        el.style.left = b.left + "%";
+        el.style.top = b.top + "%";
+        el.style.fontSize = "12px";
+        el.style.padding = "6px 8px";
+        el.style.cursor = "pointer";
+        if (b.main) {
+            el.style.background = "#f1c40f";
+            el.style.borderColor = "#fff3b0";
+            el.style.boxShadow = "0 0 16px rgba(241,196,15,0.7)";
+        }
+        el.onclick = () => showBaseInfo(b);
+        box.appendChild(el);
+    });
+
+    /* info panel under the map */
+    const info = document.querySelector("#map .info-box");
+    if (info) {
+        const p = document.createElement("div");
+        p.id = "baseInfo";
+        p.style.cssText = "margin-top:12px;padding-top:12px;border-top:1px solid #333;";
+        p.innerHTML = '<span style="color:#aaa;">👆 Tap an SMFA base on the map for details.</span>';
+        info.appendChild(p);
+    }
+
+    const legend = box.querySelector(".map-legend");
+    if (legend) legend.innerHTML = "🟢 SMFA bases (Antarctica)<br>⚪ Other nations";
+})();
+
+function showBaseInfo(b) {
+    const el = document.getElementById("baseInfo");
+    if (!el) return;
+
+    const leader = t => (typeof leaderOf === "function" ? leaderOf(t) : null);
+    const lines = [];
+
+    if (b.main) {
+        lines.push("👥 Home of the <b>President</b> and the <b>Assistant</b> team.");
+        const al = leader("Assistant");
+        lines.push("👑 Assistant leader: <b>" + (al ? escapeHTML(al) : "Vacant") + "</b>");
+    } else {
+        const l = leader(b.team);
+        lines.push("🏴 Team: <b>" + escapeHTML(b.team) + "</b>");
+        lines.push("👑 Leader: <b>" + (l ? escapeHTML(l) : "Vacant") + "</b>");
+
+        const ticker = typeof TEAM_STOCKS !== "undefined" ? TEAM_STOCKS[b.team] : null;
+        lines.push(ticker
+            ? "📈 Owns <b>" + escapeHTML(companies[ticker].name) + "</b> (" + ticker + ")"
+            : "📈 Owns no company");
+    }
+
+    el.innerHTML = "<h3 style='margin:0 0 6px;'>" + escapeHTML(b.label) + "</h3>" +
+                   lines.join("<br>");
+}
 /* ==================================================
    START
 ================================================== */
