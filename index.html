@@ -5895,6 +5895,182 @@ renderHome = function () {
     buildUpdateLog();
     removeWarComingSoon();
 };
+    /* ===== SMFA PATCH v18: RESTORE TEAM ROSTER + LIVE GRAPH + RANK LADDER ===== */
+
+(function restoreStyles() {
+    const s = document.createElement("style");
+    s.textContent = `
+    .rank-description{color:#888;font-size:13px;margin-top:5px;}
+    .rank-box{background:#101010;border:1px solid #333;border-radius:10px;padding:15px;margin-top:20px;}
+    .rank-list{margin-top:10px;}
+    .rank-item{padding:9px 12px;margin:4px 0;background:#181818;border-left:3px solid #333;border-radius:5px;color:#aaa;}
+    .rank-item.current{border-left-color:#00ff88;color:#00ff88;font-weight:bold;background:#12251d;}
+    .rank-item.senior{color:#f1c40f;}
+    .rank-item.senior.current{border-left-color:#f1c40f;background:#28220b;}
+    .stock-chart-card{background:#181818;border:1px solid #333;border-radius:12px;padding:18px;margin-bottom:20px;}
+    .chart-header{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;}
+    .chart-header h3{margin:0 0 5px;}
+    .chart-header span{color:#f1c40f;font-weight:bold;}
+    .chart-header select{background:#111;color:white;border:1px solid #555;padding:8px;border-radius:6px;}
+    #stockChart{width:100%;height:300px;display:block;background:#101010;border:1px solid #333;border-radius:8px;}`;
+    document.head.appendChild(s);
+})();
+
+/* ---------- Team roster ---------- */
+
+// Hoisting makes this later definition win over the empty one near the top.
+function renderTeam() {
+    const container = document.getElementById("onlinePersonnel");
+    if (!container) return;
+
+    container.innerHTML = "<h3>👤 Personnel Accounts</h3>";
+
+    for (const username in accounts) {
+        const account = accounts[username];
+        const member = document.createElement("div");
+        member.className = "member";
+        member.innerHTML =
+            "👤 <b>" + escapeHTML(username) + "</b><br>" +
+            "🎖️ Rank: <b>" + escapeHTML(account.rank) + "</b><br>" +
+            "🏷️ Role: " + escapeHTML(account.role);
+        container.appendChild(member);
+    }
+}
+
+(function addRosterDiv() {
+    const box = document.querySelector("#team .info-box");
+    if (box && !document.getElementById("onlinePersonnel")) {
+        const d = document.createElement("div");
+        d.id = "onlinePersonnel";
+        box.appendChild(d);
+    }
+})();
+
+/* ---------- Rank ladder in the Command Center ---------- */
+
+(function addRankBox() {
+    const btn = document.getElementById("promotionButton");
+    if (!btn || document.getElementById("rankList")) return;
+    const box = document.createElement("div");
+    box.className = "rank-box";
+    box.innerHTML =
+        "<h3>🎖️ MILITARY RANK SYSTEM</h3>" +
+        '<p class="rank-description">Every standard rank has a Senior version. ' +
+        "Senior ranks are the highest form of that rank.</p>" +
+        '<div id="rankList" class="rank-list"></div>';
+    btn.parentNode.insertBefore(box, btn);
+})();
+
+const _updateCommandCenterV18 = updateCommandCenter;
+updateCommandCenter = function () {
+    _updateCommandCenterV18();
+    renderRankList();
+};
+
+/* ---------- Live market graph (reads the shared price history) ---------- */
+
+let selectedChartStock = "ADI";
+
+(function addLiveGraph() {
+    const list = document.getElementById("stockList");
+    if (!list || document.getElementById("stockChart")) return;
+    const card = document.createElement("div");
+    card.className = "stock-chart-card";
+    card.innerHTML =
+        '<div class="chart-header"><div>' +
+        '<h3 id="chartTitle">ADI — Live Market</h3><span id="chartPrice"></span></div>' +
+        '<select id="chartStock" onchange="changeChartStock()">' +
+        Object.keys(companies).map(t => "<option>" + t + "</option>").join("") +
+        "</select></div>" +
+        '<canvas id="stockChart" aria-label="Live SMFA stock price graph"></canvas>';
+    list.parentNode.insertBefore(card, list);
+})();
+
+function changeChartStock() {
+    selectedChartStock = document.getElementById("chartStock").value;
+    drawStockChart();
+}
+
+function drawStockChart() {
+    const canvas = document.getElementById("stockChart");
+    if (!canvas) return;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (w <= 0 || h <= 0) return;
+    const prices = history[selectedChartStock];
+    if (!prices || prices.length < 2) return;
+
+    const r = window.devicePixelRatio || 1;
+    canvas.width = w * r;
+    canvas.height = h * r;
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(r, 0, 0, r, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    let min = Math.min(...prices), max = Math.max(...prices);
+    const range = Math.max(max - min, 1);
+    min -= range * 0.15;
+    max += range * 0.15;
+
+    const pad = 40, gw = w - pad * 2, gh = h - pad * 2;
+    ctx.strokeStyle = "#292929";
+    ctx.lineWidth = 1;
+    ctx.fillStyle = "#888";
+    ctx.font = "12px Arial";
+    for (let i = 0; i <= 5; i++) {
+        const y = pad + (gh / 5) * i;
+        ctx.beginPath();
+        ctx.moveTo(pad, y);
+        ctx.lineTo(w - pad, y);
+        ctx.stroke();
+        ctx.fillText("$" + (max - ((max - min) / 5) * i).toFixed(2), 5, y + 4);
+    }
+
+    const first = prices[0], last = prices[prices.length - 1];
+    const color = last >= first ? "#00ff88" : "#ff4d4d";
+
+    ctx.beginPath();
+    prices.forEach((p, i) => {
+        const x = pad + (i / (prices.length - 1)) * gw;
+        const y = pad + ((max - p) / (max - min)) * gh;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(w - pad, pad + ((max - last) / (max - min)) * gh, 5, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+
+    document.getElementById("chartTitle").textContent = selectedChartStock + " — Live Market";
+    document.getElementById("chartPrice").textContent = formatMoney(last);
+}
+
+const _renderStocksV18 = renderStocks;
+renderStocks = function () {
+    _renderStocksV18();
+    drawStockChart();
+};
+
+window.addEventListener("resize", drawStockChart);
+
+/* ---------- Refresh the roster and graph when opening panels / logging in ---------- */
+
+const _openPanelV18 = openPanel;
+openPanel = async function (name) {
+    await _openPanelV18(name);
+    if (name === "team") renderTeam();
+    if (name === "stocks") drawStockChart();
+};
+
+const _loginV18 = login;
+login = async function () {
+    await _loginV18();
+    if (currentUser) renderTeam();
+};
 /* ==================================================
    START
 ================================================== */
