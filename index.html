@@ -4910,6 +4910,184 @@ if (typeof showBaseInfo === "function") {
         if (el) el.innerHTML = el.innerHTML.split("🏴 Team:").join("🏴 Main Team:");
     };
 }
+    /* ===== SMFA PATCH v14: WORKING ACTIONS ===== */
+
+const NATIONS = {
+    "USA": "Challenge", "China": "Challenge", "Russia": "Challenge",
+    "India": "Expert", "UK": "Expert", "France": "Expert", "Japan": "Expert",
+    "Brazil": "Hard", "Egypt": "Hard", "Saudi Arabia": "Hard", "Indonesia": "Hard",
+    "Australia": "Medium", "Canada": "Medium", "Mexico": "Medium",
+    "Argentina": "Easy", "Nigeria": "Easy", "South Africa": "Easy"
+};
+const TIER_UNITS = { Easy: 100, Medium: 250, Hard: 600, Expert: 1200, Challenge: 2500 };
+const MATS = ["⛽ Fuel", "💥 Ammo", "🔩 Steel", "🔌 Electronics"];
+const ACT = {
+    recon:    { label: "🔎 START RECON MISSION", cost: 500, cd: 60000 },
+    supplies: { label: "📦 ORGANIZE SUPPLIES",   cost: 800, cd: 120000 },
+    advance:  { label: "🌎 ADVANCE WORLD",       cost: 0,   cd: 300000 },
+    status:   { label: "📡 CHECK WORLD STATUS",  cost: 0,   cd: 0 }
+};
+const WORLD_EVENTS = [
+    { t: "signed a big defense contract", pct: 0.03 },
+    { t: "hit a supply shortage", pct: -0.03 },
+    { t: "announced a research breakthrough", pct: 0.05 },
+    { t: "had shipments delayed by a storm", pct: -0.02 },
+    { t: "posted record output", pct: 0.04 }
+];
+
+const rnd = arr => arr[Math.floor(Math.random() * arr.length)];
+
+function getAct() {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem("smfaActions_" + currentUser) || "null"); } catch (e) { /* ignore */ }
+    return Object.assign({ mat: {}, intel: {}, day: 1, cd: {}, log: [] }, s || {});
+}
+function putAct(s) {
+    localStorage.setItem("smfaActions_" + currentUser, JSON.stringify(s));
+}
+function actWait(s, k) {
+    return Math.max(0, (s.cd[k] || 0) + ACT[k].cd - Date.now());
+}
+
+function actSpend(cost) {
+    if (cost <= 0) return true;
+    if (money < cost) { alert("Not enough Smiley Dollars!"); return false; }
+    money -= cost;
+    saveGame();
+    if (typeof pushWallet === "function") pushWallet();
+    const b = document.getElementById("balance");
+    if (b) b.textContent = formatMoney(money);
+    return true;
+}
+
+function runAction(k) {
+    if (!currentUser || !accounts[currentUser] || walletUser !== currentUser) return;
+
+    const s = getAct();
+    const wait = actWait(s, k);
+    const res = document.getElementById("actionResult");
+    if (wait > 0) { res.innerHTML = "⏳ Not ready yet. Try again in " + fmtTime(wait) + "."; return; }
+
+    const team = accounts[currentUser].team;
+    let entry = "";
+
+    if (k === "recon") {
+        const left = Object.keys(NATIONS).filter(n => !s.intel[n]);
+        if (!left.length) { res.innerHTML = "🔎 Every nation has already been scouted."; return; }
+        const cost = team === "Space Force" ? ACT.recon.cost / 2 : ACT.recon.cost;
+        if (!actSpend(cost)) return;
+        const n = rnd(left);
+        const tier = NATIONS[n];
+        s.intel[n] = tier;
+        const lo = Math.round(TIER_UNITS[tier] * 0.8), hi = Math.round(TIER_UNITS[tier] * 1.2);
+        entry = "🔎 Recon on <b>" + n + "</b>: difficulty <b>" + tier +
+                "</b>, estimated " + lo + "–" + hi + " units. (-" + formatMoney(cost) + ")";
+    }
+
+    if (k === "supplies") {
+        if (!actSpend(ACT.supplies.cost)) return;
+        const count = team === "Assistant" ? 7 : 5;
+        const got = {};
+        for (let i = 0; i < count; i++) {
+            const m = rnd(MATS);
+            s.mat[m] = (s.mat[m] || 0) + 1;
+            got[m] = (got[m] || 0) + 1;
+        }
+        entry = "📦 Supplies organized: " +
+            Object.entries(got).map(([m, c]) => c + "× " + m).join(", ") +
+            ". (-" + formatMoney(ACT.supplies.cost) + ")";
+    }
+
+    if (k === "advance") {
+        s.day++;
+        const t = rnd(Object.keys(companies));
+        const ev = rnd(WORLD_EVENTS);
+        const p = Math.max(1, companies[t].price * (1 + ev.pct));
+        companies[t].price = p;
+        [history[t], stockHistory[t]].forEach(a => { a.push(p); if (a.length > 60) a.shift(); });
+        saveGame();
+        renderStocks();
+        pushMarket();
+        entry = "🌎 World advanced to <b>Day " + s.day + "</b>. News: <b>" + t + "</b> " + ev.t +
+                " (" + (ev.pct > 0 ? "+" : "") + (ev.pct * 100).toFixed(0) + "% stock).";
+    }
+
+    if (k === "status") {
+        const mats = MATS.map(m => m + ": " + (s.mat[m] || 0)).join(" · ");
+        const scouted = Object.keys(s.intel).length;
+        const market = Object.keys(companies).map(t => {
+            const pct = (companies[t].price - history[t][0]) / history[t][0] * 100;
+            return t + " " + formatMoney(companies[t].price) + " (" + (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%)";
+        }).join(" · ");
+        const cds = ["recon", "supplies", "advance"].map(x => {
+            const w = actWait(s, x);
+            return x + ": " + (w ? "⏳ " + fmtTime(w) : "ready");
+        }).join(" · ");
+        res.innerHTML = "📡 <b>World Status — Day " + s.day + "</b><br>" +
+            "📦 Materials: " + mats + "<br>" +
+            "🔎 Nations scouted: " + scouted + " / 17<br>" +
+            "📈 Market: " + market + "<br>" +
+            "⏱️ Cooldowns: " + cds;
+        return;
+    }
+
+    s.cd[k] = Date.now();
+    s.log.unshift("<span style='color:#888;'>" + new Date().toLocaleTimeString() + "</span> " + entry);
+    s.log = s.log.slice(0, 8);
+    putAct(s);
+    res.innerHTML = "✅ " + entry;
+    renderActionLog();
+}
+
+function renderActionLog() {
+    const el = document.getElementById("actionLog");
+    if (!el || !currentUser) return;
+    const s = getAct();
+    const intel = Object.keys(s.intel);
+    el.innerHTML =
+        "<h3 style='margin:18px 0 6px;'>📜 Recent Activity</h3>" +
+        (s.log.length ? s.log.map(l => "<div class='member' style='margin:6px 0;'>" + l + "</div>").join("")
+                      : "<p class='rank-description'>Nothing yet. Start a mission!</p>") +
+        (intel.length
+            ? "<h3 style='margin:18px 0 6px;'>🗂️ Intel</h3><div class='member'>" +
+              intel.map(n => escapeHTML(n) + " — " + s.intel[n]).join("<br>") + "</div>"
+            : "");
+}
+
+(function wireActions() {
+    const keys = ["recon", "supplies", "advance", "status"];
+    document.querySelectorAll("#action .action-button").forEach((b, i) => {
+        const k = keys[i];
+        if (!k) return;
+        b.onclick = () => runAction(k);
+        b.dataset.k = k;
+    });
+
+    const res = document.getElementById("actionResult");
+    if (res) res.insertAdjacentHTML("afterend", '<div id="actionLog"></div>');
+
+    const intro = document.querySelector("#action .info-box p");
+    if (intro) intro.textContent =
+        "Fictional world simulation. Some actions cost Smiley Dollars, and each has a cooldown.";
+})();
+
+setInterval(function () {
+    if (!currentUser || !accounts[currentUser]) return;
+    const s = getAct();
+    document.querySelectorAll("#action .action-button").forEach(b => {
+        const k = b.dataset.k;
+        if (!k) return;
+        const w = actWait(s, k);
+        const cost = ACT[k].cost ? " — " + ACT[k].cost + " SD" : "";
+        b.textContent = ACT[k].label + cost + (w ? "  ⏳ " + fmtTime(w) : "");
+    });
+}, 1000);
+
+const _openPanelV14 = openPanel;
+openPanel = function (name) {
+    _openPanelV14(name);
+    if (name === "action") renderActionLog();
+};
 /* ==================================================
    START
 ================================================== */
