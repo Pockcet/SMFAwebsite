@@ -5088,6 +5088,266 @@ openPanel = function (name) {
     _openPanelV14(name);
     if (name === "action") renderActionLog();
 };
+    /* ===== SMFA PATCH v15: WAR UPDATE (NATIONS ONLY) ===== */
+
+const ATK = {
+ "Airforce":{u:"✈️ Fighter",sd:300,cost:{"⛽ Fuel":2,"🔩 Steel":1,"🔌 Electronics":1},ups:["Afterburners","Smart Bombs","Stealth Coating"]},
+ "Land Division":{u:"🪖 Tank Squad",sd:250,cost:{"🔩 Steel":2,"⛽ Fuel":1,"💥 Ammo":2},ups:["Reactive Armor","Heavy Artillery","Night Optics"]},
+ "Navy":{u:"⚓ Warship",sd:350,cost:{"🔩 Steel":3,"⛽ Fuel":2,"💥 Ammo":1},ups:["Reinforced Hulls","Long-Range Missiles","Sonar Suite"]},
+ "Space Force":{u:"🛰️ Strike Satellite",sd:450,cost:{"🔌 Electronics":3,"⛽ Fuel":1,"🔩 Steel":1},ups:["Better Satellites","Laser Targeting","Orbital Relay"]}
+};
+const TIERS = ["Easy","Medium","Hard","Expert","Challenge"];
+const T = {
+ Easy:{pw:300,min:3,up:3,rar:"Common",mats:5},
+ Medium:{pw:800,min:5,up:4,rar:"Uncommon",mats:8},
+ Hard:{pw:2000,min:8,up:6,rar:"Rare",mats:12},
+ Expert:{pw:4500,min:12,up:8,rar:"Epic",mats:18},
+ Challenge:{pw:10000,min:20,up:10,rar:"Legendary",mats:25}
+};
+const UNIT_PW = 25, WAR_CAP = 100, MAT_PRICE = 100;
+
+let war = { world:{conquered:{}}, teams:{} }, sendN = 0, warTick = 0, warBusy = false;
+const tdef = () => ({ mat:{}, units:0, ups:[], bonus:0, won:[], battle:null, log:[] });
+const seedR = s => { const x = Math.sin(s) * 10000; return x - Math.floor(x); };
+const nWeak = n => Object.keys(ATK)[[...n].reduce((a,c) => a + c.charCodeAt(0), 0) % 4];
+const myTeams = () => [accounts[currentUser] && accounts[currentUser].team, supportTeams[currentUser]].filter(Boolean);
+const isLead = t => currentUser === "President" || leaderOf(t) === currentUser;
+const tierOpen = tier => {
+  const i = TIERS.indexOf(tier);
+  return i === 0 || Object.keys(NATIONS).filter(n => NATIONS[n] === TIERS[i-1]).every(n => war.world.conquered[n]);
+};
+
+async function loadWar() {
+  try {
+    const r = await sb("war_state?select=*");
+    if (!r.ok) throw new Error("war_state unavailable");
+    (await r.json()).forEach(x => {
+      if (x.key === "world") war.world = Object.assign({conquered:{}}, x.data);
+      else if (x.key.startsWith("team:")) war.teams[x.key.slice(5)] = Object.assign(tdef(), x.data);
+    });
+  } catch (e) { console.warn("War load:", e); }
+}
+
+async function wmod(key, fn) {
+  await loadWar();
+  const isW = key === "world", name = key.slice(5);
+  const next = fn(isW ? war.world : (war.teams[name] || tdef())) ;
+  if (isW) war.world = next; else war.teams[name] = next;
+  await sb("war_state", { method:"POST", headers:UPSERT,
+    body: JSON.stringify([{ key, data:next, updated_at:new Date().toISOString() }]) });
+  return next;
+}
+
+/* ---------- Supply, build, attack ---------- */
+
+async function buyMat(team, m, q) {
+  if (!myTeams().length) return alert("Join a main or supporting team first.");
+  const cost = Math.round(MAT_PRICE * (myTeams().includes(team) ? 0.75 : 1)) * q;
+  if (!actSpend(cost)) return;
+  await wmod("team:" + team, d => { d.mat[m] = (d.mat[m] || 0) + q; return d; });
+  renderWar();
+}
+
+async function donateMats(team) {
+  const s = getAct(), mine = s.mat;
+  if (!Object.values(mine).some(v => v > 0)) return alert("You have no materials. Use Organize Supplies first.");
+  s.mat = {}; putAct(s);
+  await wmod("team:" + team, d => { for (const m in mine) d.mat[m] = (d.mat[m] || 0) + mine[m]; return d; });
+  renderWar();
+}
+
+async function buildUnits(team, k) {
+  const A = ATK[team];
+  if (!isLead(team)) return alert("Only the team leader can build units.");
+  if (money < A.sd * k) return alert("Not enough Smiley Dollars!");
+  let err = "";
+  await wmod("team:" + team, d => {
+    for (const m in A.cost) if ((d.mat[m] || 0) < A.cost[m] * k) { err = "Not enough " + m + " in the warehouse."; return d; }
+    for (const m in A.cost) d.mat[m] -= A.cost[m] * k;
+    d.units += k;
+    return d;
+  });
+  if (err) return alert(err);
+  actSpend(A.sd * k);
+  renderWar();
+}
+
+async function attackNation(team, n) {
+  if (!isLead(team)) return;
+  let err = "";
+  await wmod("team:" + team, d => {
+    const k = Math.floor(+sendN) || d.units;
+    if (d.battle) { err = "A battle is already underway."; return d; }
+    if (k < 1 || k > d.units) { err = "You have " + d.units + " units available."; return d; }
+    if (!tierOpen(NATIONS[n])) { err = "That tier is still locked."; return d; }
+    d.units -= k;
+    d.battle = { nation:n, sent:k, seed:Date.now() % 100000,
+                 endsAt:Date.now() + T[NATIONS[n]].min * 60000, by:currentUser };
+    return d;
+  });
+  if (err) alert(err);
+  renderWar();
+}
+
+/* ---------- Battle resolution (deterministic from the saved seed) ---------- */
+
+async function resolveBattle(team) {
+  let won = false, nat = null;
+  await wmod("team:" + team, d => {
+    const b = d.battle;
+    if (!b || Date.now() < b.endsAt) return d;
+    nat = b.nation;
+    const t = T[NATIONS[nat]];
+    const power = b.sent * UNIT_PW * (1 + d.bonus / 100) * (nWeak(nat) === team ? 1.5 : 1) * (0.85 + seedR(b.seed) * 0.3);
+    won = power >= t.pw;
+    const lost = Math.ceil(b.sent * (won ? 0.2 : 0.5));
+    d.units += b.sent - lost;
+    let rew = "No reward.";
+
+    if (won && !d.won.includes(nat)) {
+      d.won.push(nat);
+      const pct = Math.round(t.up * (0.7 + seedR(b.seed + 1) * 0.6) * 10) / 10;
+      const name = ATK[team].ups[Math.floor(seedR(b.seed + 2) * 3)];
+      const add = Math.min(Math.max(0, WAR_CAP - d.bonus), pct);
+      d.bonus = Math.round((d.bonus + add) * 10) / 10;
+      d.ups.push({ n:name, p:add, r:t.rar });
+      if (pct > add) d.mat["🔩 Steel"] = (d.mat["🔩 Steel"] || 0) + Math.ceil((pct - add) * 2);
+      rew = "🎁 " + t.rar + " upgrade: " + name + " +" + add + "%" + (pct > add ? " (cap reached, extra became Steel)" : "");
+    } else if (won) {
+      for (let i = 0; i < t.mats; i++) { const m = MATS[Math.floor(seedR(b.seed + 10 + i) * 4)]; d.mat[m] = (d.mat[m] || 0) + 1; }
+      rew = "📦 Repeat win: " + t.mats + " materials.";
+    }
+
+    d.log.unshift(new Date().toLocaleTimeString() + " — " + (won ? "✅ VICTORY" : "❌ DEFEAT") +
+      " vs " + nat + " (" + NATIONS[nat] + "). Sent " + b.sent + ", lost " + lost + ". " + rew);
+    d.log = d.log.slice(0, 10);
+    d.battle = null;
+    return d;
+  });
+  if (won && nat) await wmod("world", w => { w.conquered[nat] = team; return w; });
+}
+
+/* ---------- War page ---------- */
+
+(function buildWarPage() {
+  const team = document.getElementById("team");
+  if (!team) return;
+  const p = document.createElement("div");
+  p.id = "war"; p.className = "panel";
+  p.innerHTML = '<h2>⚔️ WAR</h2><div class="info-box">' +
+    '<p class="rank-description">Supply a team, build units, and defeat the nations. ' +
+    'Everyone can supply. Leaders build and attack.</p>' +
+    'Team: <select id="warTeam" class="promo-select" onchange="renderWar()">' +
+    Object.keys(ATK).map(t => "<option>" + t + "</option>").join("") +
+    '</select></div><div id="warBody"></div>';
+  team.parentNode.insertBefore(p, team);
+
+  const nav = document.querySelector(".navigation");
+  if (nav) {
+    const b = document.createElement("button");
+    b.textContent = "⚔️ WAR";
+    b.onclick = () => openPanel("war");
+    nav.insertBefore(b, nav.lastElementChild);
+  }
+})();
+
+function renderWar() {
+  const body = document.getElementById("warBody");
+  if (!body || !currentUser || !accounts[currentUser]) return;
+  const ae = document.activeElement;
+  if (ae && body.contains(ae) && /INPUT|SELECT/.test(ae.tagName)) return;
+
+  const sel = document.getElementById("warTeam");
+  if (!sel.dataset.init) { const m = myTeams().find(t => ATK[t]); if (m) sel.value = m; sel.dataset.init = 1; }
+
+  const team = sel.value, A = ATK[team], d = war.teams[team] || tdef();
+  const own = myTeams().includes(team), lead = isLead(team), s = getAct();
+  const price = Math.round(MAT_PRICE * (own ? 0.75 : 1));
+  const ld = leaderOf(team);
+  const unitCost = Object.entries(A.cost).map(([m, c]) => c + "× " + m).join(", ") + " + " + A.sd + " SD";
+
+  let h = `<div class="info-box"><h3>${A.u} — ${team}</h3>
+    <p>👑 Leader: <b>${ld ? escapeHTML(ld) : "Vacant"}</b></p>
+    <p>⬆️ Upgrade bonus: <b>${d.bonus}%</b> / ${WAR_CAP}%</p>
+    <div style="height:8px;background:#222;border-radius:4px;"><div style="height:8px;width:${d.bonus}%;background:#00ff88;border-radius:4px;"></div></div>
+    <p>📦 Warehouse: ${MATS.map(m => m + ": " + (d.mat[m] || 0)).join(" · ")}</p>
+    <p>${A.u}s ready: <b>${d.units}</b></p></div>`;
+
+  h += `<div class="info-box"><h3>🛒 Supply this team</h3>
+    <p class="rank-description">${price} SD each${own ? " (your team discount)" : ""}.</p>` +
+    MATS.map(m => `<button class="command-button" onclick="buyMat('${team}','${m}',5)">+5 ${m}</button>`).join("") +
+    `<button class="command-button" onclick="donateMats('${team}')">📥 DONATE MY MATERIALS</button></div>`;
+
+  if (lead) {
+    h += `<div class="info-box"><h3>🏭 Build units</h3>
+      <p class="rank-description">Each ${A.u}: ${unitCost}</p>
+      <button class="command-button" onclick="buildUnits('${team}',1)">BUILD 1</button>
+      <button class="command-button" onclick="buildUnits('${team}',5)">BUILD 5</button></div>`;
+  }
+
+  h += `<div class="info-box"><h3>🎯 Nations</h3>`;
+  if (d.battle) {
+    h += `<p>⚔️ Battle vs <b>${d.battle.nation}</b> — <b>${fmtTime(d.battle.endsAt - Date.now())}</b> left · ${d.battle.sent} units deployed</p>`;
+  } else if (lead) {
+    h += `<p>Units to send: <input type="number" min="1" class="account-input" style="width:110px;display:inline-block;" value="${sendN || ""}" placeholder="all" oninput="sendN=+this.value"></p>`;
+  }
+  Object.keys(NATIONS).sort((a, b) => TIERS.indexOf(NATIONS[a]) - TIERS.indexOf(NATIONS[b])).forEach(n => {
+    const tier = NATIONS[n], open = tierOpen(tier), c = war.world.conquered[n], scouted = s.intel[n];
+    const info = scouted ? ` · power ~${T[tier].pw} · weak to ${nWeak(n)}` : " · 🌫️ unscouted";
+    const btn = lead && open && !d.battle && d.units > 0
+      ? `<br><button class="command-button" onclick="attackNation('${team}','${n}')">⚔️ ATTACK</button>` : "";
+    h += `<div class="member" style="margin:6px 0;">${c ? "✅" : open ? "🎯" : "🔒"} <b>${n}</b> · ${tier}${info}${d.won.includes(n) ? " · beaten by this team" : ""}${btn}</div>`;
+  });
+  h += `</div>`;
+
+  h += `<div class="info-box"><h3>🎁 Upgrades</h3>` +
+    (d.ups.length ? d.ups.map(u => `<div class="member">${u.r}: <b>${escapeHTML(u.n)}</b> +${u.p}%</div>`).join("") : "<p class='rank-description'>None yet. Win a battle!</p>") +
+    `<h3>📜 Battle reports</h3>` +
+    (d.log.length ? d.log.map(l => `<div class="member" style="font-size:13px;">${escapeHTML(l)}</div>`).join("") : "<p class='rank-description'>No battles yet.</p>") + `</div>`;
+
+  body.innerHTML = h;
+}
+
+/* ---------- Map colouring (conquered nations + tier tags) ---------- */
+
+function paintMap() {
+  document.querySelectorAll("#worldMapBox > div").forEach(el => {
+    const n = el.dataset.n || el.textContent.trim();
+    if (!NATIONS[n]) return;
+    el.dataset.n = n;
+    const c = war.world.conquered[n];
+    el.textContent = n + " · " + NATIONS[n] + (c ? " ✅" : "");
+    el.style.color = c ? "#00ff88" : "#9fb3a8";
+    el.style.borderColor = c ? "#00ff88" : "#3a4a42";
+    el.style.background = c ? "rgba(0,255,136,.22)" : "rgba(8,16,13,.8)";
+  });
+}
+
+/* ---------- Timer loop ---------- */
+
+setInterval(async function () {
+  if (!currentUser || !accounts[currentUser] || warBusy) return;
+  warBusy = true;
+  try {
+    if (warTick++ % 5 === 0) {
+      await loadWar();
+      for (const t in ATK) {
+        const b = (war.teams[t] || {}).battle;
+        if (b && Date.now() >= b.endsAt) await resolveBattle(t);
+      }
+      paintMap();
+    }
+    const p = document.getElementById("war");
+    if (p && p.classList.contains("active")) renderWar();
+  } catch (e) { console.warn(e); }
+  warBusy = false;
+}, 1000);
+
+const _openPanelV15 = openPanel;
+openPanel = async function (name) {
+  _openPanelV15(name);
+  if (name === "war") { await loadWar(); renderWar(); }
+};
 /* ==================================================
    START
 ================================================== */
