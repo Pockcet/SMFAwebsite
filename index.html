@@ -3635,6 +3635,217 @@ updateCommandCenter = function () {
     _updateCommandCenterV6();
     renderLeaderAdmin();
 };
+    /* ===== SMFA PATCH v7: SALARY + DIVIDENDS + PER-ACCOUNT WALLETS ===== */
+
+const PAY_INTERVAL   = 10 * 60 * 1000;  // payday every 10 minutes
+const MAX_CATCHUP    = 6;               // max missed paydays paid after being away
+const SHARE_DIVIDEND = 0.02;            // 2% of share price, per share, per payday
+const OWNER_BONUS    = 500;             // leader bonus = 500 x company share price
+
+const SALARIES = {
+    "Recruit": 500,
+    "Senior Recruit": 800,
+    "Private": 1200,
+    "Senior Private": 2000,
+    "Corporal": 3000,
+    "Senior Corporal": 4500,
+    "Sergeant": 7000,
+    "Senior Sergeant": 10000,
+    "Lieutenant": 16000,
+    "Senior Lieutenant": 25000,
+    "Captain": 40000,
+    "Senior Captain": 60000,
+    "Major": 90000,
+    "Senior Major": 140000,
+    "Colonel": 210000,
+    "Senior Colonel": 320000,
+    "General": 500000,
+    "Senior General": 750000,
+    "Commander": 1100000,
+    "Senior Commander": 1600000,
+    "President": 2500000
+};
+
+let lastPay = Date.now();
+let walletUser = null;
+
+/* ---------- Per-account wallets ---------- */
+
+function walletKey(u) { return "smfaWallet_" + u; }
+
+function saveWallet() {
+    if (!currentUser || walletUser !== currentUser) return;
+    localStorage.setItem(walletKey(currentUser),
+        JSON.stringify({ money, portfolio, lastPay }));
+}
+
+function loadWallet() {
+    const saved = localStorage.getItem(walletKey(currentUser));
+    const empty = { ADI: 0, ICD: 0, NEX: 0, SFC: 0 };
+
+    if (saved) {
+        const w = JSON.parse(saved);
+        money = Number(w.money);
+        portfolio = Object.assign({}, empty, w.portfolio);
+        lastPay = Number(w.lastPay) || Date.now();
+    } else if (currentUser === "President") {
+        lastPay = Date.now();            // keep your existing money and shares
+    } else {
+        money = 10000;
+        portfolio = empty;
+        lastPay = Date.now();
+    }
+    walletUser = currentUser;
+    saveWallet();
+}
+
+const _saveGameV7 = saveGame;
+saveGame = function () {
+    _saveGameV7();
+    saveWallet();
+};
+
+const _loginV7 = login;
+login = async function () {
+    await _loginV7();
+    if (currentUser && walletUser !== currentUser) {
+        loadWallet();
+        renderStocks();
+    }
+};
+
+/* ---------- Income maths ---------- */
+
+function incomeBreakdown() {
+    const a = accounts[currentUser];
+    const salary = a ? (SALARIES[a.rank] || 0) : 0;
+
+    let dividends = 0;
+    for (const t in companies) {
+        dividends += (portfolio[t] || 0) * companies[t].price * SHARE_DIVIDEND;
+    }
+
+    let owner = 0;
+    for (const team in TEAM_STOCKS) {
+        if (leaderOf(team) === currentUser) {
+            owner += companies[TEAM_STOCKS[team]].price * OWNER_BONUS;
+        }
+    }
+
+    const total = Math.round((salary + dividends + owner) * 100) / 100;
+    return { salary, dividends, owner, total };
+}
+
+function fmtTime(ms) {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+function payToast(html) {
+    const t = document.createElement("div");
+    t.style.cssText =
+        "position:fixed;left:50%;bottom:25px;transform:translateX(-50%);" +
+        "background:#181818;border:2px solid #00ff88;border-radius:10px;" +
+        "padding:14px 20px;z-index:10001;text-align:center;max-width:90%;" +
+        "box-shadow:0 0 25px rgba(0,255,136,.4);";
+    t.innerHTML = html;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 7000);
+}
+
+/* ---------- Screens ---------- */
+
+(function buildIncomeUI() {
+    // countdown under the balance
+    const bal = document.querySelector(".balance");
+    if (bal) {
+        bal.insertAdjacentHTML("beforeend",
+            '<div style="font-size:12px;color:#aaa;margin-top:6px;">' +
+            '💵 Next payday in <b id="paydayTimer">--:--</b></div>');
+    }
+
+    // income section in the Command Center
+    const anchor = document.getElementById("teamPickerBox");
+    if (anchor) {
+        const box = document.createElement("div");
+        box.className = "account-section";
+        box.id = "incomeBox";
+        anchor.parentNode.insertBefore(box, anchor);
+    }
+})();
+
+function renderIncome() {
+    if (!currentUser || !accounts[currentUser]) return;
+
+    const left = fmtTime(lastPay + PAY_INTERVAL - Date.now());
+    const timer = document.getElementById("paydayTimer");
+    if (timer) timer.textContent = left;
+
+    const box = document.getElementById("incomeBox");
+    if (!box) return;
+
+    const b = incomeBreakdown();
+    box.innerHTML = `
+        <h3>💵 Income</h3>
+        <p>Next payday in <b>${left}</b> (every 10 minutes)</p>
+        <p>🎖️ Salary (${escapeHTML(accounts[currentUser].rank)}):
+           <b>${formatMoney(b.salary)}</b></p>
+        <p>📈 Dividends from your shares: <b>${formatMoney(b.dividends)}</b></p>
+        <p>👑 Company ownership bonus: <b>${formatMoney(b.owner)}</b></p>
+        <p>💰 Total per payday: <b class="success">${formatMoney(b.total)}</b></p>`;
+}
+
+const _renderRankListV7 = renderRankList;
+renderRankList = function () {
+    _renderRankListV7();
+    document.querySelectorAll("#rankList .rank-item").forEach((el, i) => {
+        const pay = formatMoney(SALARIES[ranks[i]] || 0).replace(".00", "");
+        el.textContent = ranks[i] + " — " + pay + " / 10 min";
+    });
+};
+
+/* ---------- Payday engine ---------- */
+
+function tickIncome() {
+    if (!currentUser || walletUser !== currentUser || !accounts[currentUser]) return;
+
+    // another tab of the same account may already have paid
+    try {
+        const s = JSON.parse(localStorage.getItem(walletKey(currentUser)) || "{}");
+        if (s.lastPay && Number(s.lastPay) > lastPay) {
+            lastPay = Number(s.lastPay);
+            money = Number(s.money);
+        }
+    } catch (e) { /* ignore */ }
+
+    const periods = Math.floor((Date.now() - lastPay) / PAY_INTERVAL);
+
+    if (periods > 0) {
+        const paid = Math.min(periods, MAX_CATCHUP);
+        const b = incomeBreakdown();
+        const total = Math.round(b.total * paid * 100) / 100;
+
+        money += total;
+        lastPay += periods * PAY_INTERVAL;
+        saveWallet();
+
+        const balance = document.getElementById("balance");
+        if (balance) balance.textContent = formatMoney(money);
+
+        payToast(
+            "💵 <b>PAYDAY!</b> +" + formatMoney(total) +
+            (paid > 1 ? " (" + paid + " paydays)" : "") +
+            "<br><span style='color:#aaa;font-size:13px;'>Salary " +
+            formatMoney(b.salary * paid) + " · Dividends " +
+            formatMoney(b.dividends * paid) + " · Ownership " +
+            formatMoney(b.owner * paid) + "</span>"
+        );
+    }
+
+    renderIncome();
+}
+
+setInterval(tickIncome, 1000);
 /* ==================================================
    START
 ================================================== */
