@@ -4553,6 +4553,363 @@ renderHome = function () {
         row.classList.toggle("rg-current", row.dataset.rank === current);
     });
 };
+    /* ===== SMFA PATCH v13: SUPPORTING TEAMS (+ "MAIN TEAM" RENAME) ===== */
+
+const SUPPORT_LEAD_MIN = "Sergeant";
+
+let supportTeams = {};    // username -> supporting team
+let supportLeaders = {};  // team -> leader username
+
+(function loadSupportCache() {
+    try {
+        const c = JSON.parse(localStorage.getItem("smfaSupport") || "{}");
+        supportTeams = c.teams || {};
+        supportLeaders = c.leaders || {};
+    } catch (e) { /* ignore */ }
+})();
+
+function saveSupportCache() {
+    localStorage.setItem("smfaSupport",
+        JSON.stringify({ teams: supportTeams, leaders: supportLeaders }));
+}
+
+async function loadSupportData() {
+    try {
+        const [a, l] = await Promise.all([
+            sb("accounts?select=username,support_team"),
+            sb("support_leaders?select=*")
+        ]);
+        if (!a.ok || !l.ok) throw new Error("support tables unavailable");
+        const arows = await a.json();
+        const lrows = await l.json();
+
+        supportTeams = {};
+        arows.forEach(r => { if (r.support_team) supportTeams[r.username] = r.support_team; });
+        supportLeaders = {};
+        lrows.forEach(r => { supportLeaders[r.team] = r.leader; });
+        saveSupportCache();
+    } catch (e) {
+        console.warn("Using saved supporting teams:", e);
+    }
+}
+
+const _loadAccountsV13 = loadAccounts;
+loadAccounts = async function () {
+    await _loadAccountsV13();
+    await loadSupportData();
+};
+
+function canLeadSupport(u) {
+    const a = accounts[u];
+    return !!a && ranks.indexOf(a.rank) >= ranks.indexOf(SUPPORT_LEAD_MIN);
+}
+
+// A leader only counts while still on that team and still Sergeant or higher.
+function supportLeaderOf(team) {
+    const u = supportLeaders[team];
+    return (u && accounts[u] && supportTeams[u] === team && canLeadSupport(u)) ? u : null;
+}
+
+function supportLabel(name) { return name ? teamLabel(name) : "None"; }
+
+/* ---------- Supporting Team section (Command Center) ---------- */
+
+(function buildSupportUI() {
+    const anchor = document.getElementById("teamPickerBox");
+    if (!anchor) return;
+
+    // rename the old section to "Main Team"
+    const oldH = anchor.querySelector("h3");
+    if (oldH) oldH.textContent = "🏴 Main Team Assignment";
+    const cur = document.getElementById("currentTeam");
+    if (cur && cur.parentNode.firstChild) {
+        cur.parentNode.firstChild.nodeValue = "Current main team: ";
+    }
+    const adminH = document.querySelector("#leaderAdminBox h3");
+    if (adminH) adminH.textContent = "👑 Appoint Main Team Leaders";
+
+    const box = document.createElement("div");
+    box.className = "account-section";
+    box.id = "supportPickerBox";
+    box.innerHTML = `
+        <h3>🛠️ Supporting Team</h3>
+        <p class="rank-description">
+            Supporting teams gather <b>resources and materials</b> for the army.
+            Anyone can join, with <b>no minimum rank</b>. Leading one needs
+            <b>${SUPPORT_LEAD_MIN}</b> or higher. A war update is coming soon.
+        </p>
+        <p>Current supporting team: <b id="currentSupport">None</b></p>
+        <select id="supportSelect" class="promo-select"></select>
+        <button class="command-button" id="supportJoinButton">JOIN</button>
+        <button class="command-button" id="supportLeaveButton">LEAVE</button>
+        <p id="supportResult"></p>`;
+    anchor.parentNode.insertBefore(box, anchor.nextSibling);
+
+    const sel = box.querySelector("#supportSelect");
+    TEAMS.forEach(t => {
+        const o = document.createElement("option");
+        o.value = t.name;
+        o.textContent = t.icon + " " + t.name;
+        sel.appendChild(o);
+    });
+
+    box.querySelector("#supportJoinButton").onclick =
+        () => chooseSupportTeam(sel.value);
+    box.querySelector("#supportLeaveButton").onclick =
+        () => chooseSupportTeam(null);
+
+    // President-only: appoint supporting leaders
+    const admin = document.createElement("div");
+    admin.className = "account-section";
+    admin.id = "supportAdminBox";
+    admin.style.display = "none";
+    admin.innerHTML = `
+        <h3>👑 Appoint Supporting Team Leaders</h3>
+        <p>Only members of the team who are <b>${SUPPORT_LEAD_MIN}</b> or higher can lead.</p>
+        <div id="supportLeaderRows"></div>
+        <p id="supportLeaderResult"></p>`;
+    box.parentNode.insertBefore(admin, box.nextSibling);
+})();
+
+function renderSupportPicker() {
+    if (!currentUser) return;
+    const mine = supportTeams[currentUser] || null;
+    const label = document.getElementById("currentSupport");
+    if (label) label.textContent = supportLabel(mine);
+    const sel = document.getElementById("supportSelect");
+    if (sel && mine && !sel.contains(document.activeElement)) sel.value = mine;
+    const leave = document.getElementById("supportLeaveButton");
+    if (leave) leave.style.display = mine ? "inline-block" : "none";
+}
+
+async function chooseSupportTeam(team) {
+    const msg = document.getElementById("supportResult");
+    const say = (text, ok) => {
+        msg.textContent = text;
+        msg.className = ok ? "success" : "error";
+    };
+    if (!currentUser) return;
+
+    say("📡 Saving...", true);
+
+    try {
+        const r = await sb("accounts?username=eq." + encodeURIComponent(currentUser), {
+            method: "PATCH",
+            headers: { "Prefer": "return=representation" },
+            body: JSON.stringify({ support_team: team })
+        });
+        if (!r.ok) throw new Error(r.status + ": " + await r.text());
+        if ((await r.json()).length === 0) throw new Error("Account not found.");
+
+        if (team) supportTeams[currentUser] = team;
+        else delete supportTeams[currentUser];
+        saveSupportCache();
+
+        say(team
+            ? "✅ You joined the " + teamLabel(team) + " supporting team!"
+            : "✅ You left your supporting team.", true);
+
+        renderSupportPicker();
+        renderSupportAdmin();
+        renderTeam();
+    } catch (e) {
+        console.error(e);
+        say("⚠️ Could not save. Did you run the SQL? (" + e.message + ")");
+    }
+}
+
+function renderSupportAdmin() {
+    const box = document.getElementById("supportAdminBox");
+    if (!box) return;
+
+    const show = currentUser === "President";
+    box.style.display = show ? "block" : "none";
+    if (!show) return;
+
+    const rows = document.getElementById("supportLeaderRows");
+    if (rows.contains(document.activeElement)) return;
+    rows.innerHTML = "";
+
+    TEAMS.forEach(t => {
+        const row = document.createElement("div");
+        row.style.margin = "10px 0";
+        row.innerHTML = t.icon + " <b>" + escapeHTML(t.name) + "</b> (supporting)<br>";
+
+        const eligible = Object.keys(accounts)
+            .filter(u => supportTeams[u] === t.name && canLeadSupport(u));
+
+        if (eligible.length === 0) {
+            row.insertAdjacentHTML("beforeend",
+                "<span class='rank-description'>No eligible members yet (needs " +
+                SUPPORT_LEAD_MIN + "+).</span>");
+            rows.appendChild(row);
+            return;
+        }
+
+        const sel = document.createElement("select");
+        sel.className = "promo-select";
+        sel.style.marginTop = "6px";
+        sel.innerHTML = '<option value="">— Vacant —</option>';
+        eligible.forEach(u => {
+            const o = document.createElement("option");
+            o.value = u;
+            o.textContent = u + " (" + accounts[u].rank + ")";
+            sel.appendChild(o);
+        });
+        sel.value = supportLeaderOf(t.name) || "";
+        row.appendChild(sel);
+
+        const btn = document.createElement("button");
+        btn.className = "command-button";
+        btn.textContent = "SET LEADER";
+        btn.onclick = () => setSupportLeader(t.name, sel.value);
+        row.appendChild(btn);
+
+        rows.appendChild(row);
+    });
+}
+
+async function setSupportLeader(team, username) {
+    const msg = document.getElementById("supportLeaderResult");
+    const say = (text, ok) => {
+        msg.textContent = text;
+        msg.className = ok ? "success" : "error";
+    };
+
+    if (currentUser !== "President") return say("❌ Only the President can appoint leaders.");
+    say("📡 Saving...", true);
+
+    try {
+        await loadAccounts();
+        let r;
+
+        if (username) {
+            if (supportTeams[username] !== team) throw new Error(username + " is not on that team.");
+            if (!canLeadSupport(username)) throw new Error(username + " needs " + SUPPORT_LEAD_MIN + " or higher.");
+            r = await sb("support_leaders", {
+                method: "POST", headers: UPSERT,
+                body: JSON.stringify([{ team, leader: username }])
+            });
+        } else {
+            r = await sb("support_leaders?team=eq." + encodeURIComponent(team), { method: "DELETE" });
+        }
+        if (!r.ok) throw new Error(r.status + ": " + await r.text());
+
+        if (username) supportLeaders[team] = username; else delete supportLeaders[team];
+        saveSupportCache();
+
+        say(username
+            ? "✅ " + username + " now leads the " + team + " supporting team!"
+            : "✅ Seat is now vacant.", true);
+
+        renderSupportAdmin();
+        renderTeam();
+    } catch (e) {
+        console.error(e);
+        say("⚠️ " + e.message + " (Did you run the SQL?)");
+    }
+}
+
+const _updateCommandCenterV13 = updateCommandCenter;
+updateCommandCenter = function () {
+    _updateCommandCenterV13();
+    renderSupportPicker();
+    renderSupportAdmin();
+};
+
+/* ---------- Team panel: "Main Team" labels + supporting teams ---------- */
+
+const _renderTeamV13 = renderTeam;
+renderTeam = function () {
+    _renderTeamV13();
+
+    const c = document.getElementById("onlinePersonnel");
+    if (!c) return;
+
+    // rename the old labels
+    c.innerHTML = c.innerHTML.split("🏴 Team:").join("🏴 Main Team:");
+    c.querySelectorAll("h3").forEach(h => {
+        if (h.textContent.includes("Teams & Leaders")) h.textContent = "🏴 Main Teams & Leaders";
+    });
+
+    // each person's supporting team (first N cards are the accounts)
+    const names = Object.keys(accounts);
+    Array.from(c.querySelectorAll(".member")).slice(0, names.length).forEach((el, i) => {
+        el.insertAdjacentHTML("beforeend",
+            "<br>🛠️ Supporting team: <b>" +
+            escapeHTML(supportLabel(supportTeams[names[i]])) + "</b>");
+    });
+
+    // supporting team list
+    c.insertAdjacentHTML("beforeend",
+        "<h3>🛠️ Supporting Teams</h3>" +
+        "<p class='rank-description'>Resource &amp; materials teams. Anyone can join. " +
+        "Leaders need " + SUPPORT_LEAD_MIN + "+.</p>");
+
+    TEAMS.forEach(t => {
+        const members = Object.keys(supportTeams)
+            .filter(u => supportTeams[u] === t.name && accounts[u]).length;
+        const leader = supportLeaderOf(t.name);
+        const el = document.createElement("div");
+        el.className = "member";
+        el.innerHTML =
+            t.icon + " <b>" + escapeHTML(t.name) + " (Supporting)</b><br>" +
+            "👑 Leader: <b>" + (leader ? escapeHTML(leader) : "Vacant") + "</b><br>" +
+            "👥 Members: <b>" + members + "</b><br>" +
+            "📦 Resources &amp; materials: coming soon";
+        c.appendChild(el);
+    });
+};
+
+/* ---------- Home page + map labels ---------- */
+
+if (typeof renderHome === "function") {
+    const _renderHomeV13 = renderHome;
+    renderHome = function () {
+        _renderHomeV13();
+
+        const grid = document.querySelector("#homeStatus .home-status");
+        if (grid && currentUser) {
+            grid.querySelectorAll("small").forEach(sm => {
+                if (sm.textContent.trim() === "🏴 Team") sm.textContent = "🏴 Main Team";
+            });
+            grid.insertAdjacentHTML("beforeend",
+                '<div class="home-stat"><small>🛠️ Supporting Team</small><b>' +
+                escapeHTML(supportLabel(supportTeams[currentUser])) + "</b></div>");
+        }
+
+        const home = document.getElementById("home");
+        if (!home || home.dataset.v13) return;
+        home.dataset.v13 = "1";
+
+        home.querySelectorAll(".info-box").forEach(box => {
+            const h = box.querySelector("h3");
+            const ul = box.querySelector("ul");
+            if (!h || !ul) return;
+            if (h.textContent.includes("How It Works")) {
+                ul.insertAdjacentHTML("beforeend",
+                    "<li>🛠️ <b>Supporting Teams:</b> a second team you can join at any " +
+                    "rank. They gather resources and materials. Leaders need <b>" +
+                    SUPPORT_LEAD_MIN + "</b> or higher. Your original team is now your " +
+                    "<b>Main Team</b>.</li>");
+            }
+            if (h.textContent.includes("Coming Soon")) {
+                ul.insertAdjacentHTML("beforeend",
+                    "<li>📦 Supporting team resources &amp; materials</li>" +
+                    "<li>⚔️ War update</li>");
+            }
+        });
+    };
+}
+
+if (typeof showBaseInfo === "function") {
+    const _showBaseInfoV13 = showBaseInfo;
+    showBaseInfo = function (b) {
+        _showBaseInfoV13(b);
+        const el = document.getElementById("baseInfo");
+        if (el) el.innerHTML = el.innerHTML.split("🏴 Team:").join("🏴 Main Team:");
+    };
+}
 /* ==================================================
    START
 ================================================== */
