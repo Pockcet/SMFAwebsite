@@ -5348,6 +5348,414 @@ openPanel = async function (name) {
   _openPanelV15(name);
   if (name === "war") { await loadWar(); renderWar(); }
 };
+    /* ===== SMFA PATCH v16: COMMANDER TEAM + WAR ROOM ===== */
+
+const COMMANDER_TEAM = "Commander";
+const CMD_TICKER = "CMD";
+
+/* ---------- Commander company (5th stock) ---------- */
+
+(function addCommanderCompany() {
+    companies[CMD_TICKER] = {
+        name: "Sovereign Command Corp.",
+        description: "Strategy, intelligence and command systems",
+        price: 300
+    };
+    try {
+        const sp = JSON.parse(localStorage.getItem("smfaPrices") || "{}");
+        if (sp[CMD_TICKER]) companies[CMD_TICKER].price = Number(sp[CMD_TICKER]);
+    } catch (e) { /* ignore */ }
+
+    if (!history[CMD_TICKER]) {
+        history[CMD_TICKER] = Array(60).fill(companies[CMD_TICKER].price);
+    }
+    stockHistory[CMD_TICKER] = [...history[CMD_TICKER]];
+    npc[CMD_TICKER] = { buyers: 0, sellers: 0 };
+    TEAM_STOCKS[COMMANDER_TEAM] = CMD_TICKER;
+    if (portfolio[CMD_TICKER] === undefined) portfolio[CMD_TICKER] = 0;
+})();
+
+function ensureCmdShares() {
+    if (portfolio && portfolio[CMD_TICKER] === undefined) portfolio[CMD_TICKER] = 0;
+}
+
+const _loadWalletV16 = loadWallet;
+loadWallet = function () { _loadWalletV16(); ensureCmdShares(); };
+
+const _applyRemoteWalletV16 = applyRemoteWallet;
+applyRemoteWallet = function (w) {
+    _applyRemoteWalletV16(w);
+    ensureCmdShares();
+    lastWalletJSON = walletSnapshot();
+};
+
+/* ---------- Commander team: President only ---------- */
+
+const _teamLabelV16 = teamLabel;
+teamLabel = function (name) {
+    return name === COMMANDER_TEAM ? "🫡 Commander" : _teamLabelV16(name);
+};
+
+const _leaderOfV16 = leaderOf;
+leaderOf = function (team) {
+    if (team === COMMANDER_TEAM) {
+        const p = accounts.President;
+        return (p && p.team === COMMANDER_TEAM) ? "President" : null;
+    }
+    return _leaderOfV16(team);
+};
+
+// Nobody except the President can hold the Commander team
+const _loadAccountsV16 = loadAccounts;
+loadAccounts = async function () {
+    await _loadAccountsV16();
+    for (const u in accounts) {
+        if (u !== "President" && accounts[u].team === COMMANDER_TEAM) delete accounts[u].team;
+    }
+};
+
+async function ensureCommanderTeam() {
+    const p = accounts.President;
+    if (!p || p.team === COMMANDER_TEAM) return;
+    try {
+        const r = await sb("accounts?username=eq.President", {
+            method: "PATCH",
+            headers: { "Prefer": "return=representation" },
+            body: JSON.stringify({ team: COMMANDER_TEAM })
+        });
+        if (!r.ok) throw new Error(r.status + ": " + await r.text());
+        if ((await r.json()).length === 0) throw new Error("President account not found.");
+        p.team = COMMANDER_TEAM;
+        localStorage.setItem("smfaAccounts", JSON.stringify(accounts));
+    } catch (e) {
+        console.warn(e);
+        payToast("⚠️ Could not save the Commander team.<br><span style='color:#aaa;font-size:13px;'>" +
+                 escapeHTML(e.message) + "</span>");
+        return;
+    }
+    updateCommandCenter();
+    renderStocks();
+    if (typeof renderHome === "function") renderHome();
+}
+
+const _loginV16 = login;
+login = async function () {
+    await _loginV16();
+    if (currentUser === "President") await ensureCommanderTeam();
+};
+
+// The President can't leave the Commander team
+const _renderTeamPickerV16 = renderTeamPicker;
+renderTeamPicker = function () {
+    _renderTeamPickerV16();
+    if (currentUser !== "President") return;
+    const ctl = document.getElementById("teamPickerControls");
+    const note = document.getElementById("teamLockedNote");
+    if (ctl) ctl.style.display = "none";
+    if (note) {
+        note.style.display = "block";
+        note.innerHTML = "🫡 You lead the <b>Commander</b> team. It is reserved for the President.";
+    }
+};
+
+/* ---------- Only the President picks attack targets ---------- */
+
+const _attackNationV16 = attackNation;
+attackNation = async function (team, n) {
+    if (currentUser !== "President") {
+        return alert("Only the President (Commander team) can choose which nation to attack.");
+    }
+    return _attackNationV16(team, n);
+};
+
+// Leaders keep Supply/Build but lose the attack controls
+const _renderWarV16 = renderWar;
+renderWar = function () {
+    _renderWarV16();
+    if (currentUser === "President") return;
+    const body = document.getElementById("warBody");
+    if (!body) return;
+    body.querySelectorAll("button[onclick^='attackNation']").forEach(b => b.remove());
+    body.querySelectorAll("input[type='number']").forEach(i => {
+        if (i.parentNode && i.parentNode.tagName === "P") i.parentNode.remove();
+    });
+    if (!body.querySelector("#cmdNote")) {
+        body.insertAdjacentHTML("afterbegin",
+            '<div class="info-box" id="cmdNote"><p class="rank-description">' +
+            "🫡 Only the President (Commander team) chooses which nation to attack. " +
+            "Leaders supply and build; the President launches.</p></div>");
+    }
+};
+
+/* ---------- Strategies (stored in war_state, key 'strategies') ---------- */
+
+let strategies = [];
+let wrDraft = { name: "", note: "", orders: {} };
+let wrSig = "";
+const WR_TEAMS = Object.keys(ATK);
+
+async function loadStrategies() {
+    try {
+        const r = await sb("war_state?key=eq.strategies&select=*");
+        if (!r.ok) throw new Error("war_state unavailable");
+        const rows = await r.json();
+        strategies = (rows[0] && rows[0].data && rows[0].data.list) || [];
+        localStorage.setItem("smfaStrategies", JSON.stringify(strategies));
+    } catch (e) {
+        console.warn("Using saved strategies:", e);
+        try { strategies = JSON.parse(localStorage.getItem("smfaStrategies") || "[]"); }
+        catch (x) { strategies = []; }
+    }
+}
+
+async function saveStrategies() {
+    localStorage.setItem("smfaStrategies", JSON.stringify(strategies));
+    const r = await sb("war_state", {
+        method: "POST",
+        headers: UPSERT,
+        body: JSON.stringify([{
+            key: "strategies",
+            data: { list: strategies },
+            updated_at: new Date().toISOString()
+        }])
+    });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+}
+
+function orderText(o) {
+    const a = ATK[o.team] || { u: "" };
+    return a.u + " " + o.team + " → " + o.nation +
+           " (" + (o.units ? o.units + " units" : "all units") + ")";
+}
+
+function wrOrder(team, field, value) {
+    if (!wrDraft.orders[team]) wrDraft.orders[team] = { nation: "", units: "" };
+    wrDraft.orders[team][field] = value;
+}
+
+function draftOrders() {
+    return WR_TEAMS.map(t => {
+        const o = wrDraft.orders[t] || {};
+        return { team: t, nation: o.nation || "", units: Math.floor(+o.units) || 0 };
+    }).filter(o => o.nation);
+}
+
+async function launchOrders(orders) {
+    if (currentUser !== "President") return alert("Only the President can choose attack targets.");
+    if (!orders.length) return alert("Pick at least one nation to attack.");
+    if (!confirm("Launch these attacks?\n\n" + orders.map(orderText).join("\n"))) return;
+
+    for (const o of orders) {
+        sendN = o.units || 0;               // 0 = send all units
+        await attackNation(o.team, o.nation);
+    }
+    sendN = 0;
+    await loadWar();
+    renderWarRoom(true);
+}
+
+function launchDraft() { launchOrders(draftOrders()); }
+
+async function launchStrategy(id) {
+    await loadStrategies();
+    const s = strategies.find(x => Number(x.id) === Number(id));
+    if (!s) return alert("Strategy not found.");
+    await launchOrders(s.orders);
+}
+
+async function saveStrategy() {
+    const say = (text, ok) => {
+        const m = document.getElementById("wrResult");
+        if (m) { m.textContent = text; m.className = ok ? "success" : "error"; }
+    };
+    if (currentUser !== "President") return;
+
+    const orders = draftOrders();
+    const name = wrDraft.name.trim();
+    if (!name) return say("❌ Give the strategy a name.");
+    if (!orders.length) return say("❌ Pick at least one nation to attack.");
+
+    say("📡 Saving...", true);
+    try {
+        await loadStrategies();
+        strategies.unshift({
+            id: Date.now(), name, note: wrDraft.note.trim(),
+            orders, by: currentUser, at: Date.now()
+        });
+        strategies = strategies.slice(0, 20);
+        await saveStrategies();
+        wrDraft = { name: "", note: "", orders: {} };
+        renderWarRoom(true);
+        say("✅ Strategy saved!", true);
+    } catch (e) {
+        console.error(e);
+        say("⚠️ Could not save. (" + e.message + ")");
+    }
+}
+
+async function deleteStrategy(id) {
+    if (currentUser !== "President") return;
+    if (!confirm("Delete this strategy?")) return;
+    try {
+        await loadStrategies();
+        strategies = strategies.filter(x => Number(x.id) !== Number(id));
+        await saveStrategies();
+    } catch (e) {
+        console.error(e);
+        alert("⚠️ Could not delete: " + e.message);
+    }
+    renderWarRoom(true);
+}
+
+/* ---------- War Room page (President only) ---------- */
+
+(function buildWarRoom() {
+    const team = document.getElementById("team");
+    if (!team) return;
+
+    const p = document.createElement("div");
+    p.id = "warroom";
+    p.className = "panel";
+    p.innerHTML = '<h2>🫡 WAR ROOM</h2><div id="warRoomBody"></div>';
+    team.parentNode.insertBefore(p, team);
+
+    const nav = document.querySelector(".navigation");
+    if (nav) {
+        const b = document.createElement("button");
+        b.id = "warRoomButton";
+        b.textContent = "🫡 WAR ROOM";
+        b.style.display = "none";
+        b.onclick = () => openPanel("warroom");
+        nav.insertBefore(b, nav.lastElementChild);
+    }
+})();
+
+function wrSignature() {
+    return JSON.stringify([
+        WR_TEAMS.map(t => {
+            const d = war.teams[t] || {};
+            return [d.units, d.bonus, d.battle && d.battle.nation, d.battle && d.battle.endsAt, leaderOf(t)];
+        }),
+        war.world.conquered,
+        strategies.map(s => s.id)
+    ]);
+}
+
+function renderWarRoom(force) {
+    const box = document.getElementById("warRoomBody");
+    if (!box || currentUser !== "President") return;
+
+    const sig = wrSignature();
+    if (!force) {
+        if (sig === wrSig) return;
+        const ae = document.activeElement;
+        if (ae && box.contains(ae) && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return;
+    }
+    wrSig = sig;
+
+    const co = companies[CMD_TICKER];
+    const nations = Object.keys(NATIONS).sort(
+        (a, b) => TIERS.indexOf(NATIONS[a]) - TIERS.indexOf(NATIONS[b]));
+
+    let h = `<div class="info-box"><h3>🫡 Commander Team</h3>
+        <p>Members: <b>President</b> (reserved seat, nobody else can join)</p>
+        <p>📈 Owns <b>${escapeHTML(co.name)}</b> (${CMD_TICKER}) —
+           <b id="wrPrice">${formatMoney(co.price)}</b></p>
+        <p class="rank-description">Only the President chooses which nation the army attacks.
+           Branch leaders supply and build the units.</p></div>`;
+
+    h += `<div class="info-box"><h3>🪖 Army Status</h3>`;
+    WR_TEAMS.forEach(t => {
+        const d = war.teams[t] || { units: 0, bonus: 0, battle: null };
+        const ld = leaderOf(t);
+        h += `<div class="member" style="margin:6px 0;">${ATK[t].u} <b>${t}</b> ·
+            leader: ${ld ? escapeHTML(ld) : "Vacant"}<br>
+            Units ready: <b>${d.units || 0}</b> · Upgrade bonus: <b>${d.bonus || 0}%</b><br>` +
+            (d.battle
+                ? `⚔️ Fighting <b>${escapeHTML(d.battle.nation)}</b> —
+                   <span class="wrTimer" data-end="${Number(d.battle.endsAt)}">${fmtTime(d.battle.endsAt - Date.now())}</span> left`
+                : "🟢 Idle") + `</div>`;
+    });
+    h += `</div>`;
+
+    h += `<div class="info-box"><h3>🧠 Strategy Planner</h3>
+        <p class="rank-description">One order per branch. Each branch fights its own battle.
+           Leave units empty to send all.</p>
+        <input class="account-input" placeholder="Strategy name" maxlength="40"
+               value="${escapeHTML(wrDraft.name)}" oninput="wrDraft.name=this.value">
+        <input class="account-input" placeholder="Notes (optional)" maxlength="120"
+               value="${escapeHTML(wrDraft.note)}" oninput="wrDraft.note=this.value">`;
+
+    WR_TEAMS.forEach(t => {
+        const o = wrDraft.orders[t] || { nation: "", units: "" };
+        const d = war.teams[t] || { units: 0 };
+        const opts = nations.map(n => {
+            const open = tierOpen(NATIONS[n]);
+            const mark = open ? (war.world.conquered[n] ? "✅ " : "🎯 ") : "🔒 ";
+            return `<option value="${n}"${o.nation === n ? " selected" : ""}${open ? "" : " disabled"}>` +
+                   `${mark}${n} (${NATIONS[n]})</option>`;
+        }).join("");
+        h += `<div class="member" style="margin:8px 0;">${ATK[t].u} <b>${t}</b> (${d.units || 0} ready)<br>
+            <select class="promo-select" style="margin-top:6px;"
+                    onchange="wrOrder('${t}','nation',this.value)">
+                <option value="">— no attack —</option>${opts}
+            </select>
+            <input type="number" min="1" class="account-input"
+                   style="width:110px;display:inline-block;" placeholder="all"
+                   value="${o.units || ""}" oninput="wrOrder('${t}','units',this.value)">
+        </div>`;
+    });
+
+    h += `<button class="command-button" onclick="saveStrategy()">💾 SAVE STRATEGY</button>
+          <button class="command-button" onclick="launchDraft()">🚀 LAUNCH NOW</button>
+          <p id="wrResult"></p></div>`;
+
+    h += `<div class="info-box"><h3>📚 Saved Strategies</h3>` +
+        (strategies.length
+            ? strategies.map(s => `<div class="member" style="margin:8px 0;">
+                <b>${escapeHTML(s.name)}</b>${s.note ? " — " + escapeHTML(s.note) : ""}<br>
+                ${(s.orders || []).map(o => escapeHTML(orderText(o))).join("<br>")}<br>
+                <button class="command-button" style="margin-top:8px;"
+                        onclick="launchStrategy(${Number(s.id)})">🚀 LAUNCH</button>
+                <button class="command-button" style="margin-top:8px;"
+                        onclick="deleteStrategy(${Number(s.id)})">🗑️ DELETE</button>
+              </div>`).join("")
+            : "<p class='rank-description'>No strategies saved yet.</p>") +
+        `</div>`;
+
+    box.innerHTML = h;
+}
+
+setInterval(function () {
+    const p = document.getElementById("warroom");
+    if (!p || !p.classList.contains("active") || currentUser !== "President") return;
+    renderWarRoom();
+    document.querySelectorAll("#warRoomBody .wrTimer").forEach(el => {
+        el.textContent = fmtTime(Number(el.dataset.end) - Date.now());
+    });
+    const pr = document.getElementById("wrPrice");
+    if (pr && companies[CMD_TICKER]) pr.textContent = formatMoney(companies[CMD_TICKER].price);
+}, 1000);
+
+/* ---------- Show the War Room tab only to the President ---------- */
+
+const _updateCommandCenterV16 = updateCommandCenter;
+updateCommandCenter = function () {
+    _updateCommandCenterV16();
+    const b = document.getElementById("warRoomButton");
+    if (b) b.style.display = currentUser === "President" ? "" : "none";
+};
+
+const _openPanelV16 = openPanel;
+openPanel = async function (name) {
+    if (name === "warroom" && currentUser !== "President") return;
+    await _openPanelV16(name);
+    if (name === "warroom") {
+        await loadWar();
+        await loadStrategies();
+        renderWarRoom(true);
+    }
+};
 /* ==================================================
    START
 ================================================== */
