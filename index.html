@@ -4241,6 +4241,212 @@ function showBaseInfo(b) {
     el.innerHTML = "<h3 style='margin:0 0 6px;'>" + escapeHTML(b.label) + "</h3>" +
                    lines.join("<br>");
 }
+    /* ===== SMFA PATCH v11: HOME / WELCOME PAGE ===== */
+
+(function buildHome() {
+
+    const s = document.createElement("style");
+    s.textContent = `
+    .home-hero{text-align:center;padding:25px 15px;background:#181818;
+        border:2px solid #00ff88;border-radius:14px;
+        box-shadow:0 0 30px rgba(0,255,136,.12);}
+    .home-hero .big{font-size:60px;font-weight:bold;color:#00ff88;}
+    .home-hero h2{margin:5px 0;}
+    .home-hero p{color:#aaa;margin:5px 0;}
+    .home-status{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+        gap:10px;margin-top:12px;}
+    .home-stat{background:#101010;border:1px solid #333;border-radius:10px;padding:12px;}
+    .home-stat small{display:block;color:#888;margin-bottom:4px;}
+    .home-stat b{color:#00ff88;font-size:17px;}
+    .home-hint{margin-top:12px;padding:12px;background:#12251d;
+        border-left:3px solid #00ff88;border-radius:6px;}
+    .home-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+        gap:12px;margin-top:12px;}
+    .home-card{background:#101010;border:1px solid #333;border-radius:10px;padding:15px;}
+    .home-card h4{margin:0 0 6px;color:#00ff88;}
+    .home-card p{color:#aaa;font-size:14px;margin:0 0 10px;}
+    .home-card .command-button{margin:0;padding:8px 14px;font-size:13px;}
+    .home-list{color:#ccc;line-height:1.8;padding-left:20px;margin:8px 0 0;}
+    `;
+    document.head.appendChild(s);
+
+    const team = document.getElementById("team");
+    if (!team) return;
+
+    const home = document.createElement("div");
+    home.id = "home";
+    home.className = "panel";
+    home.innerHTML = `
+        <div class="home-hero">
+            <div class="big">&gt;:)</div>
+            <h2>WELCOME TO THE SMILEY FACE ARMY</h2>
+            <p>Organization Command HQ</p>
+        </div>
+
+        <div class="info-box">
+            <h3>🪪 Your Status</h3>
+            <div id="homeStatus"></div>
+        </div>
+
+        <div class="info-box">
+            <h3>🧊 What is SMFA?</h3>
+            <p style="color:#ccc;">
+                The Smiley Face Army is a fictional organization with its home
+                territory in <b>Antarctica</b>. You join as a Recruit, climb a
+                military rank ladder, join a team, earn Smiley Dollars (SD),
+                and invest in the companies that power the army.
+            </p>
+        </div>
+
+        <div class="info-box">
+            <h3>🧭 What You Can Do</h3>
+            <div class="home-grid">
+
+                <div class="home-card">
+                    <h4>👥 Team</h4>
+                    <p>See every member, their rank and team, plus each team's leader
+                       and the company it owns.</p>
+                    <button class="command-button" onclick="openPanel('team')">OPEN TEAM</button>
+                </div>
+
+                <div class="home-card">
+                    <h4>🗺️ World Map</h4>
+                    <p>View SMFA's Antarctic bases and the other nations. Tap a base for
+                       details. Switch between surface and underground views.</p>
+                    <button class="command-button" onclick="openPanel('map')">OPEN MAP</button>
+                </div>
+
+                <div class="home-card">
+                    <h4>⚡ Action</h4>
+                    <p>Fictional simulation controls like recon and supply missions.
+                       Still a prototype.</p>
+                    <button class="command-button" onclick="openPanel('action')">OPEN ACTION</button>
+                </div>
+
+                <div class="home-card">
+                    <h4>📈 Stock Exchange</h4>
+                    <p>Buy and sell shares in four companies. Prices move live and are
+                       shared across every device.</p>
+                    <button class="command-button" onclick="openPanel('stocks')">OPEN STOCKS</button>
+                </div>
+
+                <div class="home-card">
+                    <h4>🫡 Command Center</h4>
+                    <p>Your rank, promotion requests, team choice, income details and
+                       account settings.</p>
+                    <button class="command-button" onclick="openPanel('command')">OPEN COMMAND CENTER</button>
+                </div>
+
+            </div>
+        </div>
+
+        <div class="info-box">
+            <h3>📚 How It Works</h3>
+            <ul class="home-list">
+                <li>🎖️ <b>Ranks:</b> 21 ranks from Recruit to President. Every rank has a
+                    <b>Senior</b> version, which is the highest form of that same rank.
+                    Request a promotion in the Command Center and the President decides
+                    how far you rise.</li>
+                <li>💵 <b>Paydays:</b> every 10 minutes you earn your rank's salary, plus
+                    dividends on any shares you own. Higher rank means higher pay.</li>
+                <li>📈 <b>Stocks:</b> AeroDyne (ADI), Ironclad (ICD), Nexora (NEX) and
+                    Stellar Frontier (SFC). Buy low, sell high, and watch the NPC
+                    investors push prices around.</li>
+                <li>🏴 <b>Teams:</b> Airforce, Land Division, Navy, Space Force, Defensive
+                    Division and Assistant. Choosing a team unlocks at
+                    <b>Senior Sergeant</b>.</li>
+                <li>👑 <b>Ownership:</b> Airforce owns AeroDyne, Land Division owns
+                    Ironclad, Navy owns Nexora and Space Force owns Stellar. Their
+                    leaders earn a bonus every payday.</li>
+            </ul>
+        </div>
+
+        <div class="info-box">
+            <h3>🚧 Coming Soon</h3>
+            <ul class="home-list">
+                <li>💬 Command Centre chat</li>
+                <li>🗺️ More map features</li>
+                <li>👥 Bigger teams and more accounts</li>
+            </ul>
+        </div>`;
+
+    team.parentNode.insertBefore(home, team);
+
+    const nav = document.querySelector(".navigation");
+    if (nav) {
+        const b = document.createElement("button");
+        b.textContent = "🏠 HOME";
+        b.onclick = function () { openPanel("home"); };
+        nav.insertBefore(b, nav.firstChild);
+    }
+})();
+
+/* ---------- Personal status card ---------- */
+
+function renderHome() {
+    const box = document.getElementById("homeStatus");
+    if (!box || !currentUser || !accounts[currentUser]) return;
+
+    const a = accounts[currentUser];
+    const teamName = typeof teamLabel === "function" ? teamLabel(a.team) : "Unassigned";
+    const salary = typeof SALARIES !== "undefined" ? (SALARIES[a.rank] || 0) : 0;
+    const canTeam = typeof canPickTeam === "function" && canPickTeam(currentUser);
+
+    let hint;
+    if (currentUser === "President") {
+        hint = "👑 You're the President. Approve promotion requests and appoint team leaders in the Command Center.";
+    } else if (!canTeam) {
+        hint = "📋 Request a promotion in the Command Center. Team selection unlocks at " +
+               (typeof TEAM_MIN_RANK !== "undefined" ? TEAM_MIN_RANK : "Senior Sergeant") + ".";
+    } else if (!a.team) {
+        hint = "🏴 You can now choose a team. Pick one in the Command Center.";
+    } else {
+        hint = "📈 Check the Stock Exchange and grow your Smiley Dollars between paydays.";
+    }
+
+    box.innerHTML = `
+        <div class="home-status">
+            <div class="home-stat"><small>👤 Username</small><b>${escapeHTML(currentUser)}</b></div>
+            <div class="home-stat"><small>🎖️ Rank</small><b>${escapeHTML(a.rank)}</b></div>
+            <div class="home-stat"><small>🏴 Team</small><b>${escapeHTML(teamName)}</b></div>
+            <div class="home-stat"><small>💰 Smiley Dollars</small><b id="homeBalance">${formatMoney(money)}</b></div>
+            <div class="home-stat"><small>💵 Salary / payday</small><b>${formatMoney(salary)}</b></div>
+            <div class="home-stat"><small>⏱️ Next payday</small><b id="homePayday">--:--</b></div>
+        </div>
+        <div class="home-hint">${escapeHTML(hint)}</div>`;
+}
+
+/* ---------- Live balance + payday countdown ---------- */
+
+setInterval(function () {
+    const home = document.getElementById("home");
+    if (!home || !home.classList.contains("active") || !currentUser) return;
+
+    const bal = document.getElementById("homeBalance");
+    if (bal) bal.textContent = formatMoney(money);
+
+    const pay = document.getElementById("homePayday");
+    if (pay && typeof fmtTime === "function") {
+        pay.textContent = fmtTime(lastPay + PAY_INTERVAL - Date.now());
+    }
+}, 1000);
+
+/* ---------- Open the Home page when the Home panel opens, and after login ---------- */
+
+const _openPanelV11 = openPanel;
+openPanel = function (name) {
+    _openPanelV11(name);
+    if (name === "home") renderHome();
+};
+
+const _loginV11 = login;
+login = async function () {
+    await _loginV11();
+    if (currentUser) {
+        renderHome();
+        openPanel("home");
+    }
+};
 /* ==================================================
    START
 ================================================== */
