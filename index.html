@@ -3846,6 +3846,159 @@ function tickIncome() {
 }
 
 setInterval(tickIncome, 1000);
+    /* ===== SMFA PATCH v8: WALLETS SAVED TO SUPABASE ===== */
+
+let walletReady = false;
+let lastWalletStamp = 0;
+let lastWalletJSON = "";
+let walletPushing = false;
+
+function walletRound() { return Math.round(money * 100) / 100; }
+
+function walletSnapshot() {
+    return JSON.stringify({ money: walletRound(), portfolio, lastPay });
+}
+
+async function fetchWallet() {
+    const r = await sb("wallets?username=eq." +
+        encodeURIComponent(currentUser) + "&select=*");
+    if (!r.ok) throw new Error("wallets table unavailable (" + r.status + ")");
+    const rows = await r.json();
+    return rows[0] || null;
+}
+
+function applyRemoteWallet(w) {
+    money = Number(w.money);
+    portfolio = Object.assign({ ADI: 0, ICD: 0, NEX: 0, SFC: 0 }, w.portfolio);
+    lastPay = Number(w.last_pay) || Date.now();
+    lastWalletStamp = Date.parse(w.updated_at);
+    lastWalletJSON = walletSnapshot();
+    if (walletUser === currentUser) saveWallet();   // refresh the local backup
+}
+
+async function pushWallet() {
+    if (!currentUser || !walletReady || walletUser !== currentUser) return;
+    if (walletPushing) return;
+
+    const snap = walletSnapshot();
+    if (snap === lastWalletJSON) return;
+
+    walletPushing = true;
+    const now = Date.now();
+    try {
+        const r = await sb("wallets", {
+            method: "POST",
+            headers: UPSERT,
+            body: JSON.stringify([{
+                username: currentUser,
+                money: walletRound(),
+                portfolio: portfolio,
+                last_pay: lastPay,
+                updated_at: new Date(now).toISOString()
+            }])
+        });
+        if (r.ok) {
+            lastWalletStamp = now;
+            lastWalletJSON = snap;
+        }
+    } catch (e) {
+        console.warn("Wallet save failed:", e);
+    }
+    walletPushing = false;
+}
+
+/* ---------- Load the cloud wallet when logging in ---------- */
+
+const _loginV8 = login;
+login = async function () {
+    await _loginV8();
+    if (!currentUser) return;
+
+    const user = currentUser;
+    walletReady = false;
+    walletUser = null;          // pauses paydays and saving until the cloud wallet is loaded
+
+    try {
+        const remote = await fetchWallet();
+
+        if (remote) {
+            applyRemoteWallet(remote);
+            walletUser = user;
+            walletReady = true;
+            saveWallet();
+        } else {
+            // First time: upload this browser's wallet as the starting cloud wallet
+            walletUser = user;
+            walletReady = true;
+            lastWalletJSON = "";
+            await pushWallet();
+        }
+    } catch (e) {
+        console.warn(e);
+        walletUser = user;      // play locally; cloud save stays off
+        payToast("⚠️ Cloud wallet unavailable. Did you run the wallets SQL?<br>" +
+                 "<span style='color:#aaa;font-size:13px;'>Your money is only saved in this browser for now.</span>");
+    }
+
+    renderStocks();
+    renderIncome();
+};
+
+/* ---------- Keep devices in sync ---------- */
+
+setInterval(async function () {
+    if (!currentUser || !walletReady || walletUser !== currentUser) return;
+
+    try {
+        if (walletSnapshot() !== lastWalletJSON) {
+            await pushWallet();
+            return;
+        }
+        const w = await fetchWallet();
+        if (w && Date.parse(w.updated_at) !== lastWalletStamp) {
+            applyRemoteWallet(w);      // another device changed this wallet
+            renderStocks();
+            renderIncome();
+        }
+    } catch (e) {
+        console.warn("Wallet sync:", e);
+    }
+}, 4000);
+
+/* ---------- Save right away after trades ---------- */
+
+const _buyV8 = buy;
+buy = function (ticker) { _buyV8(ticker); pushWallet(); };
+
+const _sellV8 = sell;
+sell = function (ticker) { _sellV8(ticker); pushWallet(); };
+
+/* ---------- Last-second save when closing the tab ---------- */
+
+window.addEventListener("beforeunload", function () {
+    if (!currentUser || !walletReady || walletUser !== currentUser) return;
+    if (walletSnapshot() === lastWalletJSON) return;
+
+    try {
+        fetch(SUPABASE_URL + "/rest/v1/wallets", {
+            method: "POST",
+            keepalive: true,
+            headers: {
+                "apikey": SUPABASE_KEY,
+                "Authorization": "Bearer " + SUPABASE_KEY,
+                "Content-Type": "application/json",
+                "Prefer": "resolution=merge-duplicates,return=minimal"
+            },
+            body: JSON.stringify([{
+                username: currentUser,
+                money: walletRound(),
+                portfolio: portfolio,
+                last_pay: lastPay,
+                updated_at: new Date().toISOString()
+            }])
+        });
+    } catch (e) { /* nothing more we can do */ }
+});
 /* ==================================================
    START
 ================================================== */
