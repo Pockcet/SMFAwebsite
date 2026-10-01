@@ -3251,6 +3251,175 @@ loadPromotionMessages = async function () {
         inbox.innerHTML = "❌ Could not load promotion requests.";
     }
 };
+    /* ===== SMFA PATCH v5: TEAM SELECTION ===== */
+
+const TEAMS = [
+    { name: "Airforce",           icon: "✈️" },
+    { name: "Land Division",      icon: "🪖" },
+    { name: "Navy",               icon: "⚓" },
+    { name: "Space Force",        icon: "🚀" },
+    { name: "Defensive Division", icon: "🛡️" },
+    { name: "Assistant",          icon: "📋" }
+];
+
+const TEAM_MIN_RANK = "Senior Sergeant";
+
+function canPickTeam(username) {
+    const a = accounts[username];
+    return !!a && ranks.indexOf(a.rank) >= ranks.indexOf(TEAM_MIN_RANK);
+}
+
+function teamLabel(name) {
+    const t = TEAMS.find(x => x.name === name);
+    return t ? t.icon + " " + t.name : "Unassigned";
+}
+
+/* ---------- Load accounts again, this time including team ---------- */
+
+loadAccounts = async function () {
+    try {
+        const r = await sb("accounts?select=*");
+        if (!r.ok) throw new Error("accounts table unavailable");
+        const rows = await r.json();
+
+        if (rows.length === 0) {
+            await sb("accounts", {
+                method: "POST", headers: UPSERT,
+                body: JSON.stringify(Object.entries(accounts).map(
+                    ([username, a]) => ({ username, ...a })))
+            });
+        } else {
+            rows.forEach(row => {
+                accounts[row.username] = {
+                    password: row.password, rank: row.rank, role: row.role
+                };
+                if (row.team) accounts[row.username].team = row.team;
+            });
+        }
+    } catch (e) {
+        console.warn("Using local accounts:", e);
+        const saved = localStorage.getItem("smfaAccounts");
+        if (saved) Object.assign(accounts, JSON.parse(saved));
+    }
+};
+
+/* ---------- Team picker in the Command Center ---------- */
+
+(function buildTeamPicker() {
+    const sections = document.querySelectorAll("#command .account-section");
+    const anchor = sections[sections.length - 1];
+    if (!anchor) return;
+
+    const box = document.createElement("div");
+    box.className = "account-section";
+    box.id = "teamPickerBox";
+    box.innerHTML = `
+        <h3>🏴 Team Assignment</h3>
+        <p>Current team: <b id="currentTeam">Unassigned</b></p>
+        <p id="teamLockedNote" class="rank-description" style="display:none;">
+            🔒 Team selection unlocks at <b>${TEAM_MIN_RANK}</b> or higher.
+        </p>
+        <div id="teamPickerControls">
+            <select id="teamSelect" class="promo-select"></select>
+            <button class="command-button" id="teamJoinButton">JOIN TEAM</button>
+        </div>
+        <p id="teamResult"></p>`;
+
+    anchor.parentNode.insertBefore(box, anchor);
+
+    const sel = box.querySelector("#teamSelect");
+    TEAMS.forEach(t => {
+        const o = document.createElement("option");
+        o.value = t.name;
+        o.textContent = t.icon + " " + t.name;
+        sel.appendChild(o);
+    });
+
+    box.querySelector("#teamJoinButton").onclick = chooseTeam;
+})();
+
+function renderTeamPicker() {
+    if (!currentUser || !accounts[currentUser]) return;
+
+    const a = accounts[currentUser];
+    const allowed = canPickTeam(currentUser);
+
+    document.getElementById("currentTeam").textContent = teamLabel(a.team);
+    document.getElementById("teamLockedNote").style.display =
+        allowed ? "none" : "block";
+    document.getElementById("teamPickerControls").style.display =
+        allowed ? "block" : "none";
+}
+
+async function chooseTeam() {
+    const msg = document.getElementById("teamResult");
+    const say = (text, ok) => {
+        msg.textContent = text;
+        msg.className = ok ? "success" : "error";
+    };
+
+    if (!currentUser) return;
+    const team = document.getElementById("teamSelect").value;
+
+    say("📡 Saving team...", true);
+
+    try {
+        await loadAccounts();   // re-check the real, current rank
+
+        if (!canPickTeam(currentUser)) {
+            renderTeamPicker();
+            return say("❌ You need " + TEAM_MIN_RANK + " or higher to choose a team.");
+        }
+
+        const r = await sb(
+            "accounts?username=eq." + encodeURIComponent(currentUser),
+            {
+                method: "PATCH",
+                headers: { "Prefer": "return=representation" },
+                body: JSON.stringify({ team })
+            }
+        );
+
+        if (!r.ok) throw new Error(r.status + ": " + await r.text());
+        if ((await r.json()).length === 0) throw new Error("Account not found.");
+
+        accounts[currentUser].team = team;
+        localStorage.setItem("smfaAccounts", JSON.stringify(accounts));
+
+        say("✅ You joined " + teamLabel(team) + "!", true);
+        renderTeam();
+        renderTeamPicker();
+
+    } catch (e) {
+        console.error(e);
+        say("⚠️ Could not save team. Did you run the SQL? (" + e.message + ")");
+    }
+}
+
+/* ---------- Hook into existing screens ---------- */
+
+const _updateCommandCenterV5 = updateCommandCenter;
+updateCommandCenter = function () {
+    _updateCommandCenterV5();
+    renderTeamPicker();
+};
+
+const _renderTeamV5 = renderTeam;
+renderTeam = function () {
+    _renderTeamV5();
+
+    const c = document.getElementById("onlinePersonnel");
+    if (!c) return;
+
+    const names = Object.keys(accounts);
+    c.querySelectorAll(".member").forEach((el, i) => {
+        const a = accounts[names[i]];
+        el.insertAdjacentHTML(
+            "beforeend",
+            "<br>🏴 Team: <b>" + escapeHTML(teamLabel(a && a.team)) + "</b>"
+        );
+    });
+};
 /* ==================================================
    START
 ================================================== */
