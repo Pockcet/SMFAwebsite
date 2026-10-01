@@ -4052,7 +4052,80 @@ window.addEventListener("beforeunload", function () {
             }])
         });
     } catch (e) { /* nothing more we can do */ }
-});
+});/* ===== SMFA PATCH v9.5: SAME MARKET ON EVERY DEVICE ===== */
+
+let mkMine = 0;       // timestamp of the last market save from THIS device
+let mkSeen = 0;       // timestamp of the last market state we know about
+let mkStale = 0;      // polls in a row where nobody else moved the market
+let mkTicker = false; // true while this device is the one running the market
+let mkBusy = false;
+let mkWarned = false;
+
+function mkWarn(text) {
+    if (mkWarned) return;
+    mkWarned = true;
+    payToast("⚠️ " + text);
+}
+
+pushMarket = async function () {
+    const now = Date.now();
+    mkMine = now;
+    mkSeen = now;
+    const stamp = new Date(now).toISOString();
+    const rows = Object.keys(companies).map(t => ({
+        ticker: t,
+        price: companies[t].price,
+        buyers: npc[t].buyers,
+        sellers: npc[t].sellers,
+        updated_at: stamp
+    }));
+    try {
+        const r = await sb("market", {
+            method: "POST", headers: UPSERT, body: JSON.stringify(rows)
+        });
+        if (!r.ok) mkWarn("Shared market can't save (error " + r.status +
+                          "). Re-run the market SQL.");
+    } catch (e) {
+        mkWarn("Shared market can't reach Supabase.");
+    }
+};
+
+updateMarket = async function () {
+    if (document.getElementById("website").style.display !== "block") return;
+    if (mkBusy) return;
+    mkBusy = true;
+
+    try {
+        const r = await sb("market?select=*");
+        if (!r.ok) throw new Error("pull " + r.status);
+        const rows = await r.json();
+
+        const stamp = rows.length >= 4
+            ? Math.max(...rows.map(x => Date.parse(x.updated_at))) : 0;
+
+        // Another device moved the market: copy it, don't tick.
+        if (stamp && stamp !== mkSeen && stamp !== mkMine) {
+            mkSeen = stamp;
+            mkStale = 0;
+            mkTicker = false;
+            adoptMarket(rows);
+            mkBusy = false;
+            return;
+        }
+        mkStale++;
+    } catch (e) {
+        mkWarn("Shared market offline. You're running your own market.");
+        mkStale = 99;
+    }
+
+    // Nobody else is moving it (or we already are): this device runs the market.
+    if (mkTicker || mkStale >= 2) {
+        mkTicker = true;
+        _updateMarket();
+        await pushMarket();
+    }
+    mkBusy = false;
+};
 /* ==================================================
    START
 ================================================== */
