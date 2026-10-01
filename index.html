@@ -3656,6 +3656,39 @@ updateCommandCenter = function () {
     _updateCommandCenterV6();
     renderLeaderAdmin();
 };
+    function renderRankList() {
+
+    const container = document.getElementById("rankList");
+
+    if (!container || !currentUser) {
+        return;
+    }
+
+    const currentRank = accounts[currentUser].rank;
+
+    container.innerHTML = "";
+
+    ranks.forEach(rank => {
+
+        const item = document.createElement("div");
+
+        item.className = "rank-item";
+
+        if (rank === currentRank) {
+            item.classList.add("current");
+        }
+
+        if (rank.startsWith("Senior")) {
+            item.classList.add("senior");
+        }
+
+        item.textContent = rank;
+
+        container.appendChild(item);
+
+    });
+
+}
     /* ===== SMFA PATCH v7: SALARY + DIVIDENDS + PER-ACCOUNT WALLETS ===== */
 
 const PAY_INTERVAL   = 10 * 60 * 1000;  // payday every 10 minutes
