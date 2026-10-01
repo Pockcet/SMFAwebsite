@@ -6071,6 +6071,17 @@ login = async function () {
     await _loginV18();
     if (currentUser) renderTeam();
 };
+    /* ===== SMFA PATCH v18.5: UPDATE LOG ENTRY FOR v18 ===== */
+
+UPDATE_LOG.unshift({
+    v: "v18",
+    title: "Restored missing features",
+    items: [
+        "Team roster is back: Personnel Accounts, Main Teams & Leaders, and Supporting Teams.",
+        "The big live market graph is back above the stock cards, with a stock selector (now includes CMD).",
+        "The rank ladder is back in the Command Center, showing salaries and your current rank."
+    ]
+});
 /* ==================================================
    START
 ================================================== */
