@@ -4447,6 +4447,112 @@ login = async function () {
         openPanel("home");
     }
 };
+    /* ===== SMFA PATCH v12: RANKS & SALARIES ON THE HOME PAGE ===== */
+
+(function addRankGuideStyles() {
+    const s = document.createElement("style");
+    s.textContent = `
+    .rg-row{display:grid;grid-template-columns:34px 1.2fr 1fr 2.2fr;gap:10px;
+        align-items:center;padding:9px 12px;margin:4px 0;background:#181818;
+        border-left:3px solid #333;border-radius:5px;color:#aaa;font-size:14px;}
+    .rg-row.rg-head{background:none;border-left-color:transparent;color:#888;
+        font-size:12px;letter-spacing:1px;text-transform:uppercase;}
+    .rg-row.rg-senior b.rg-name{color:#f1c40f;}
+    .rg-row.rg-current{border-left-color:#00ff88;background:#12251d;color:#ddd;}
+    .rg-row.rg-current.rg-senior{border-left-color:#f1c40f;background:#28220b;}
+    .rg-name{color:#fff;}
+    .rg-pay{color:#00ff88;font-weight:bold;}
+    @media (max-width:600px){
+        .rg-row{grid-template-columns:28px 1fr 1fr;}
+        .rg-note{grid-column:1 / -1;font-size:13px;}
+        .rg-row.rg-head .rg-note{display:none;}
+    }`;
+    document.head.appendChild(s);
+})();
+
+const RANK_NOTES = {
+    "Recruit": "Brand-new member. Everyone starts here.",
+    "Private": "Trained soldier who knows the basics.",
+    "Corporal": "Leads a small squad.",
+    "Sergeant": "Trusted squad leader. Senior Sergeant unlocks team selection.",
+    "Lieutenant": "Junior officer who commands a platoon.",
+    "Captain": "Officer who commands a whole company.",
+    "Major": "Senior staff officer who plans operations.",
+    "Colonel": "Commands large units across the army.",
+    "General": "High command. Shapes the army's strategy.",
+    "Commander": "Top of the officer ladder, just below the President."
+};
+
+function rankNote(rank) {
+    if (rank === "President") {
+        return "Supreme leader of SMFA. Can't be earned by promotion.";
+    }
+    if (rank === "Senior Commander") {
+        return "Highest form of Commander. The top rank a promotion can grant.";
+    }
+    if (rank === "Senior Sergeant") {
+        return "Highest form of Sergeant. Unlocks team selection!";
+    }
+    if (rank.startsWith("Senior ")) {
+        return "Highest form of " + rank.slice(7) + ", one step below the next rank.";
+    }
+    return RANK_NOTES[rank] || "";
+}
+
+function buildRankGuide() {
+    if (document.getElementById("rankGuideBox")) return;
+
+    const home = document.getElementById("home");
+    if (!home) return;
+
+    const box = document.createElement("div");
+    box.className = "info-box";
+    box.id = "rankGuideBox";
+
+    let html = `
+        <h3>🎖️ Ranks &amp; Salaries</h3>
+        <p style="color:#aaa;margin-top:0;">
+            Every rank has a <b style="color:#f1c40f;">Senior</b> version, which is the
+            highest form of that same rank. Salary is paid every 10 minutes.
+            Descriptions are just for flavor.
+        </p>
+        <div class="rg-row rg-head">
+            <div>#</div><div>Rank</div><div>Pay / 10 min</div><div class="rg-note">About</div>
+        </div>`;
+
+    ranks.forEach((rank, i) => {
+        const pay = formatMoney(SALARIES[rank] || 0).replace(".00", "");
+        const senior = rank.startsWith("Senior") ? " rg-senior" : "";
+        html += `
+        <div class="rg-row${senior}" data-rank="${escapeHTML(rank)}">
+            <div>${i + 1}</div>
+            <div><b class="rg-name">${escapeHTML(rank)}</b></div>
+            <div class="rg-pay">${pay}</div>
+            <div class="rg-note">${escapeHTML(rankNote(rank))}</div>
+        </div>`;
+    });
+
+    box.innerHTML = html;
+
+    const target = Array.from(home.querySelectorAll(".info-box")).find(el => {
+        const h = el.querySelector("h3");
+        return h && h.textContent.includes("How It Works");
+    });
+
+    if (target) home.insertBefore(box, target);
+    else home.appendChild(box);
+}
+
+const _renderHomeV12 = renderHome;
+renderHome = function () {
+    _renderHomeV12();
+    buildRankGuide();
+
+    const current = currentUser && accounts[currentUser] ? accounts[currentUser].rank : null;
+    document.querySelectorAll("#rankGuideBox .rg-row[data-rank]").forEach(row => {
+        row.classList.toggle("rg-current", row.dataset.rank === current);
+    });
+};
 /* ==================================================
    START
 ================================================== */
