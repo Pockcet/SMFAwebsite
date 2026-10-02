@@ -6330,6 +6330,155 @@ UPDATE_LOG.unshift({
     "The War page shows your own price and, for the President, the remaining hourly limit."
   ]
 });
+    /* ===== SMFA PATCH v21: AUTO WORLD DAY (SYNCED ACROSS DEVICES) ===== */
+
+const DAY_MS = 3600000;   // 1 world day = 1 real hour
+let wc = { epoch: 0, lastDay: 1, events: [] }, wcBusy = false, wcInit = false, wcTick = 0;
+
+/* The same day number always gives the same event, on every device */
+function dayEvent(day) {
+  const keys = Object.keys(companies);
+  const t = keys[Math.floor(seedR(day * 7.31) * keys.length)];
+  const ev = WORLD_EVENTS[Math.floor(seedR(day * 3.17 + 1) * WORLD_EVENTS.length)];
+  return { day, t, text: ev.t, pct: ev.pct };
+}
+
+async function fetchClock() {
+  const r = await sb("war_state?key=eq.worldclock&select=*");
+  if (!r.ok) throw new Error("clock " + r.status);
+  const rows = await r.json();
+  return rows[0] ? rows[0].data : null;
+}
+
+function applyDayEvents(evs) {
+  evs.forEach(e => {
+    const c = companies[e.t];
+    if (!c) return;
+    const p = Math.max(1, c.price * (1 + e.pct));
+    c.price = p;
+    [history[e.t], stockHistory[e.t]].forEach(a => { a.push(p); if (a.length > 60) a.shift(); });
+  });
+  saveGame();
+  renderStocks();
+  pushMarket();
+}
+
+const evLine = e => "Day " + e.day + ": <b>" + e.t + "</b> " + e.text +
+  " (" + (e.pct > 0 ? "+" : "") + (e.pct * 100).toFixed(0) + "% stock)";
+
+function adoptClock(d) {
+  const prev = wc.lastDay;
+  wc = d;
+  if (wcInit && d.lastDay > prev && d.events.length) {
+    payToast("🌎 <b>Day " + d.lastDay + "</b> begins<br><span style='color:#aaa;font-size:13px;'>" +
+             evLine(d.events[d.events.length - 1]) + "</span>");
+  }
+  wcInit = true;
+  renderClock();
+}
+
+async function syncWorldClock() {
+  if (wcBusy || !currentUser || !accounts[currentUser]) return;
+  wcBusy = true;
+  try {
+    let d = await fetchClock();
+
+    if (!d) {   // first ever run: create the shared clock
+      await sb("war_state", {
+        method: "POST",
+        headers: { "Prefer": "resolution=ignore-duplicates,return=minimal" },
+        body: JSON.stringify([{ key: "worldclock",
+          data: { epoch: Date.now(), lastDay: 1, events: [] },
+          updated_at: new Date().toISOString() }])
+      });
+      d = await fetchClock();
+    }
+
+    if (d) {
+      const cur = 1 + Math.floor((Date.now() - d.epoch) / DAY_MS);
+      if (cur > d.lastDay) {
+        const missed = [];
+        for (let x = d.lastDay + 1; x <= cur; x++) missed.push(x);
+        const evs = missed.slice(-5).map(dayEvent);   // at most the 5 latest days of news
+        const nd = { epoch: d.epoch, lastDay: cur, events: d.events.concat(evs).slice(-10) };
+
+        // only ONE device wins this claim, so the stock change is applied once
+        const r = await sb("war_state?key=eq.worldclock&data->>lastDay=eq." + d.lastDay, {
+          method: "PATCH",
+          headers: { "Prefer": "return=representation" },
+          body: JSON.stringify({ data: nd, updated_at: new Date().toISOString() })
+        });
+        if (r.ok && (await r.json()).length) { applyDayEvents(evs); d = nd; }
+        else d = (await fetchClock()) || d;
+      }
+      adoptClock(d);
+    }
+  } catch (e) { console.warn("World clock:", e); }
+  wcBusy = false;
+}
+
+/* ---------- World Day card in the Action panel ---------- */
+
+(function buildClockCard() {
+  const p = document.querySelector("#action .info-box p");
+  if (!p || document.getElementById("worldClock")) return;
+  p.insertAdjacentHTML("afterend", '<div id="worldClock" class="member"></div>');
+})();
+
+const clockLeft = () => wc.epoch ? Math.max(0, wc.epoch + wc.lastDay * DAY_MS - Date.now()) : 0;
+
+function renderClock() {
+  const el = document.getElementById("worldClock");
+  if (!el) return;
+  if (!wc.epoch) { el.innerHTML = "🌎 Loading the world clock..."; return; }
+  const left = clockLeft();
+  el.innerHTML = "🌎 <b>World Day " + wc.lastDay + "</b> · next day in <b>" +
+    (left > 0 ? fmtTime(left) : "now...") + "</b><br>" +
+    '<span class="rank-description">The world advances by itself every hour, at the same time on every device.</span>' +
+    (wc.events.length
+      ? "<br>📰 <b>World News</b><br>" + wc.events.slice(-5).reverse().map(evLine).join("<br>")
+      : "<br>📰 No news yet.");
+}
+
+/* ---------- Replace the old manual Advance World ---------- */
+
+ACT.advance.label = "🌎 WORLD DAY";
+ACT.advance.cd = 0;
+
+const _runActionV21 = runAction;
+runAction = function (k) {
+  if (k === "advance") {
+    document.getElementById("actionResult").innerHTML =
+      "🌎 The world advances automatically every hour, on every device at the same time.<br>" +
+      "Day <b>" + wc.lastDay + "</b> · next day in <b>" + fmtTime(clockLeft()) + "</b>.";
+    syncWorldClock();
+    return;
+  }
+  _runActionV21(k);
+};
+
+// Check World Status now shows the shared day
+const _getActV21 = getAct;
+getAct = function () {
+  const s = _getActV21();
+  s.day = wc.lastDay;
+  return s;
+};
+
+setInterval(function () {
+  if (!currentUser || !accounts[currentUser]) return;
+  renderClock();
+  if (clockLeft() <= 0 || wcTick++ % 15 === 0) syncWorldClock();
+}, 1000);
+
+UPDATE_LOG.unshift({
+  v: "v21", title: "Auto world day", items: [
+    "The world day now advances by itself every hour, with the same day number on every device.",
+    "Every device sees the same world news. Each day's event is shared and moves one company's stock once.",
+    "New World Day card in the Action panel with a countdown and the last 5 news items.",
+    "The Advance World button is now World Day and only shows the current day. A popup announces each new day."
+  ]
+});
 
 /* ==================================================
    START
