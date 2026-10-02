@@ -7502,6 +7502,244 @@ UPDATE_LOG.unshift({
     "Recent activity: the last 8 things a player did, like recon missions, supply runs, materials bought, units built, chat and promotions."
   ]
 });
+    /* ===== SMFA PATCH v27: BETRAYAL ===== */
+
+const BT = {
+  steal:    { cd: 1800000, catchP: .35, label: "🗡️ Steal supplies" },
+  sabotage: { cd: 3600000, catchP: .45, label: "💣 Sabotage units" },
+  leak:     { cd: 3600000, catchP: .40, label: "📡 Leak intel" }
+};
+const BT_MIN_RANK = "Sergeant", BT_TAG_MS = 86400000;
+const BT_PAY = { Easy: 2000, Medium: 5000, Hard: 20000, Expert: 80000, Challenge: 300000 };
+let bet = { log: [], tags: {}, cd: {} }, betSig = "";
+
+const tagged = u => (bet.tags[u] || 0) > Date.now();
+const btCan = () => !!currentUser && !!accounts[currentUser] && currentUser !== "President" &&
+  ranks.indexOf(accounts[currentUser].rank) >= ranks.indexOf(BT_MIN_RANK) && myTeams().some(t => ATK[t]);
+
+async function loadBet() {
+  try {
+    const r = await sb("war_state?key=eq.betrayals&select=*");
+    if (!r.ok) return;
+    const rows = await r.json();
+    if (rows[0] && rows[0].data) bet = Object.assign({ log: [], tags: {}, cd: {} }, rows[0].data);
+  } catch (e) { /* ignore */ }
+}
+
+async function bmod(fn) {
+  await loadBet();
+  fn(bet);
+  const r = await sb("war_state", { method: "POST", headers: UPSERT,
+    body: JSON.stringify([{ key: "betrayals", data: bet, updated_at: new Date().toISOString() }]) });
+  if (!r.ok) throw new Error(r.status);
+}
+
+async function betray(kind) {
+  const say = (x, ok) => { const m = document.getElementById("btResult"); if (m) { m.textContent = x; m.className = ok ? "success" : "error"; } };
+  if (!btCan()) return say("❌ Betrayal unlocks at " + BT_MIN_RANK + " and needs a branch team.");
+
+  const team = document.getElementById("btTeam").value;
+  const nat = document.getElementById("btNation").value;
+  if (!myTeams().includes(team)) return say("❌ You can only betray your own team.");
+  if (kind === "leak" && !nat) return say("❌ Pick a nation to leak to.");
+
+  await loadBet();
+  const wait = ((bet.cd[currentUser] || {})[kind] || 0) + BT[kind].cd - Date.now();
+  if (wait > 0) return say("⏳ Lay low for " + fmtTime(wait) + " first.");
+
+  say("🕶️ Working in the shadows...", true);
+  let err = "", res = "", got = {}, payout = 0;
+  const now = () => new Date().toLocaleTimeString();
+
+  if (kind === "steal") {
+    await wmod("team:" + team, d => {
+      let n = 0;
+      for (const m in d.mat) {
+        const take = Math.floor((d.mat[m] || 0) * (.05 + Math.random() * .05));
+        if (take > 0) { d.mat[m] -= take; got[m] = take; n += take; }
+      }
+      if (!n) { err = "The warehouse has nothing worth stealing."; return d; }
+      d.log.unshift(now() + " — ⚠️ Unexplained loss: " + Object.entries(got).map(([m, c]) => fmtN(c) + " " + m).join(", ") + " missing from the warehouse.");
+      d.log = d.log.slice(0, 10);
+      return d;
+    });
+    if (err) return say("❌ " + err);
+    const s = getAct();
+    for (const m in got) s.mat[m] = (s.mat[m] || 0) + got[m];
+    putAct(s);
+    res = "stole " + Object.entries(got).map(([m, c]) => fmtN(c) + " " + m).join(", ");
+  }
+
+  if (kind === "sabotage") {
+    let lost = 0;
+    await wmod("team:" + team, d => {
+      if (d.units < 1) { err = "There are no units to sabotage."; return d; }
+      lost = Math.max(1, Math.floor(d.units * (.05 + Math.random() * .05)));
+      d.units -= lost;
+      d.log.unshift(now() + " — ⚠️ Sabotage: " + fmtN(lost) + " units were destroyed in the hangar.");
+      d.log = d.log.slice(0, 10);
+      return d;
+    });
+    if (err) return say("❌ " + err);
+    res = "destroyed " + fmtN(lost) + " units";
+  }
+
+  if (kind === "leak") {
+    const tier = NATIONS[nat];
+    payout = BT_PAY[tier];
+    await wmod("world", w => {
+      w.hp = w.hp || {};
+      const max = HP_MAX[tier];
+      w.hp[nat] = { hp: Math.min(max, nHP(nat) + max * .1), t: Date.now() };
+      return w;
+    });
+    await wmod("team:" + team, d => {
+      d.log.unshift(now() + " — ⚠️ " + nat + " seems to know our plans. It is recovering HP.");
+      d.log = d.log.slice(0, 10);
+      return d;
+    });
+    money += payout; saveGame(); pushWallet();
+    res = "sold intel to " + nat + " for " + fmtN(payout) + " SD";
+  }
+
+  const caught = Math.random() < BT[kind].catchP;
+  let fine = 0;
+  if (caught) {
+    fine = Math.min(money, Math.max(1000, Math.round(money * .15)));
+    money -= fine; saveGame(); pushWallet();
+    try {
+      await sb("chat_messages", { method: "POST", headers: { Prefer: "return=minimal" },
+        body: JSON.stringify([{ channel: "announce", sender: "SMFA Security",
+          body: "🚨 " + dn(currentUser) + " was caught betraying the " + team + " team (" + BT[kind].label.replace(/^\S+ /, "") +
+                ")! Fined " + fmtN(fine) + " SD and marked a traitor for 24 hours." }]) });
+    } catch (e) { /* chat table may not exist */ }
+  }
+
+  try {
+    await bmod(b => {
+      b.cd[currentUser] = Object.assign(b.cd[currentUser] || {}, { [kind]: Date.now() });
+      b.log.unshift({ t: Date.now(), u: currentUser, k: kind, team, nat: kind === "leak" ? nat : "", res, caught, fine });
+      b.log = b.log.slice(0, 40);
+      if (caught) b.tags[currentUser] = Date.now() + BT_TAG_MS;
+    });
+  } catch (e) { console.warn("Betrayal log:", e); }
+
+  const bal = document.getElementById("balance");
+  if (bal) bal.textContent = formatMoney(money);
+  say(caught
+    ? "🚨 CAUGHT! You " + res + ", but you were exposed. Fined " + fmtN(fine) + " SD and marked a traitor for 24 hours."
+    : "✅ You " + res + ". Nobody noticed... this time.", !caught);
+  renderBetray(true);
+}
+
+async function pardonTraitor(u) {
+  if (currentUser !== "President") return;
+  try { await bmod(b => { delete b.tags[u]; }); } catch (e) { console.warn(e); }
+  renderBetray(true);
+}
+
+/* ---------- Command Center section ---------- */
+
+(function buildBetrayBox() {
+  const a = document.getElementById("expBox") || document.getElementById("teamPickerBox");
+  if (!a || document.getElementById("btBox")) return;
+  const b = document.createElement("div");
+  b.className = "account-section"; b.id = "btBox";
+  a.parentNode.insertBefore(b, a);
+})();
+
+function renderBetray(force) {
+  const box = document.getElementById("btBox");
+  if (!box || !currentUser || !accounts[currentUser]) return;
+
+  const pres = currentUser === "President", can = btCan();
+  const teams = myTeams().filter(t => ATK[t]);
+  const nats = Object.keys(NATIONS).filter(n => !(war.world.conquered || {})[n] && tierOpen(NATIONS[n]));
+  const sig = JSON.stringify([pres, can, teams, nats, bet.log.length, Object.keys(bet.tags).filter(tagged)]);
+  const ae = document.activeElement;
+  if (!force) {
+    if (sig === betSig) return;
+    if (box.contains(ae) && /SELECT|INPUT/.test(ae.tagName)) return;
+  }
+  betSig = sig;
+
+  let h = "<h3>🗡️ Betrayal</h3>";
+  if (pres) {
+    h += '<p class="rank-description">🕵️ Every betrayal attempt is logged here, caught or not. You can pardon traitors.</p>' +
+      (bet.log.length ? bet.log.map(e =>
+        `<div class="member" style="margin:6px 0;"><span style="color:#888;">${escapeHTML(new Date(e.t).toLocaleString())}</span><br>` +
+        `<b>${escapeHTML(dn(e.u))}</b> — ${escapeHTML(BT[e.k].label)} (${escapeHTML(e.team)}): ${escapeHTML(e.res)}<br>` +
+        (e.caught ? "🚨 Caught, fined " + fmtN(e.fine) + " SD" : "🕶️ Not caught") +
+        (e.caught && tagged(e.u) ? ` <button class="command-button" style="padding:4px 10px;margin:0 0 0 8px;" onclick="pardonTraitor('${e.u}')">PARDON</button>` : "") + "</div>"
+      ).join("") : '<p class="rank-description">No betrayals yet. Everyone is loyal... so far.</p>');
+  } else if (!can) {
+    h += '<p class="rank-description">🔒 Betrayal unlocks at <b>' + BT_MIN_RANK + "</b> and needs a main or supporting branch team (Airforce, Land Division, Navy or Space Force).</p>";
+  } else {
+    const cd = bet.cd[currentUser] || {};
+    const left = k => Math.max(0, (cd[k] || 0) + BT[k].cd - Date.now());
+    h += '<p class="rank-description">⚠️ Betray your own team for a payoff. You might get caught: a fine, a traitor tag and a public announcement. ' +
+         "Every attempt is logged, and the President can see all of them, caught or not.</p>" +
+      (tagged(currentUser) ? '<p class="error">🗡️ You are marked as a traitor.</p>' : "") +
+      'Team: <select id="btTeam" class="promo-select">' + teams.map(t => `<option>${escapeHTML(t)}</option>`).join("") + "</select> " +
+      'Nation (for Leak Intel): <select id="btNation" class="promo-select"><option value="">— none —</option>' +
+      nats.map(n => `<option value="${n}">${n} (${NATIONS[n]})</option>`).join("") + "</select><br><br>" +
+      Object.keys(BT).map(k =>
+        `<button class="command-button" onclick="betray('${k}')">${BT[k].label.toUpperCase()}${left(k) ? "  ⏳ " + fmtTime(left(k)) : ""}</button>`).join("") +
+      '<p id="btResult"></p>';
+  }
+  box.innerHTML = h;
+}
+
+const _updateCommandCenterV27 = updateCommandCenter;
+updateCommandCenter = function () { _updateCommandCenterV27(); renderBetray(); };
+
+const _openPanelV27 = openPanel;
+openPanel = async function (name) {
+  await _openPanelV27(name);
+  if (name === "command") { await loadBet(); renderBetray(true); }
+};
+
+setInterval(async function () {
+  if (!currentUser) return;
+  await loadBet();
+  const p = document.getElementById("command");
+  if (p && p.classList.contains("active")) renderBetray();
+}, 10000);
+
+const _loginV27 = login;
+login = async function () { await _loginV27(); if (currentUser) loadBet(); };
+
+/* ---------- Traitor mark in the Portfolio ---------- */
+
+const _renderPortfolioV27 = renderPortfolio;
+renderPortfolio = function () {
+  _renderPortfolioV27();
+  const body = document.getElementById("pfBody");
+  if (!body) return;
+  if (pfSel) {
+    const h = body.querySelector("h3");
+    if (tagged(pfSel) && h && !body.querySelector("#btTag")) {
+      h.insertAdjacentHTML("afterend", '<p id="btTag" class="error">🗡️ <b>Known traitor</b> for about ' +
+        Math.max(1, Math.ceil((bet.tags[pfSel] - Date.now()) / 3600000)) + " more hour(s)</p>");
+    }
+  } else {
+    body.querySelectorAll(".member[onclick]").forEach(el => {
+      const m = (el.getAttribute("onclick") || "").match(/pfOpen\('(.+)'\)/);
+      const b = el.querySelector("b");
+      if (m && b && tagged(m[1])) b.insertAdjacentText("afterend", " 🗡️");
+    });
+  }
+};
+
+UPDATE_LOG.unshift({
+  v: "v27", title: "Betrayal", items: [
+    "Sergeants and above on a branch team can betray their own team from the Command Center: steal supplies, sabotage units, or leak intel to a nation.",
+    "Each betrayal has a cooldown and a chance of being caught. Getting caught means a fine, a 24-hour traitor tag and a public announcement.",
+    "If nobody catches you, your team only sees an unexplained loss in their war log.",
+    "Every attempt is logged, and the President can see all of them, caught or not, and can pardon traitors.",
+    "Betrayal never touches ranks, levels or accounts. It only affects the team's shared stock and your own money."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
