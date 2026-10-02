@@ -7300,6 +7300,208 @@ UPDATE_LOG.unshift({
     "EXP is saved with your wallet, so it follows you across devices."
   ]
 });
+    /* ===== SMFA PATCH v26: PORTFOLIO (profiles, online status, recent activity) ===== */
+
+const ONLINE_MS = 75000;
+let acts = [], pf = { pres: {}, wal: {} }, pfSel = null, pfBusy = false, lastBeat = 0, lastRk = null, lastTm = null, lastSp = null;
+
+const ago = ms => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return s < 60 ? "just now" : s < 3600 ? Math.floor(s / 60) + " min ago" : s < 86400 ? Math.floor(s / 3600) + " h ago" : Math.floor(s / 86400) + " d ago";
+};
+const isOnline = u => u === currentUser || (pf.pres[u] && Date.now() - (pf.pres[u].t || 0) < ONLINE_MS);
+
+/* ---------- My own presence + activity (saved in war_state, key presence:<name>) ---------- */
+
+async function beat() {
+  if (!currentUser || !accounts[currentUser] || Date.now() - lastBeat < 5000) return;
+  lastBeat = Date.now();
+  try {
+    await sb("war_state", {
+      method: "POST", headers: UPSERT,
+      body: JSON.stringify([{ key: "presence:" + currentUser, data: { t: Date.now(), a: acts }, updated_at: new Date().toISOString() }])
+    });
+  } catch (e) { /* ignore */ }
+}
+
+function logAct(text) {
+  if (!currentUser) return;
+  const d = document.createElement("div");
+  d.innerHTML = text;
+  acts.unshift({ t: Date.now(), x: (d.textContent || "").slice(0, 120) });
+  acts = acts.slice(0, 8);
+  localStorage.setItem("smfaActs_" + currentUser, JSON.stringify(acts));
+  beat();
+}
+
+const _runActionV26 = runAction;
+runAction = function (k) {
+  const before = (getAct().log || [])[0];
+  _runActionV26(k);
+  const after = (getAct().log || [])[0];
+  if (after && after !== before) logAct(after);
+};
+
+const _buyMatV26 = buyMat;
+buyMat = async function (team, m, q) {
+  const m0 = money;
+  await _buyMatV26(team, m, q);
+  if (money < m0) logAct("Bought " + q + " " + m + " for the " + team + " warehouse");
+};
+
+const _buildUnitsV26 = buildUnits;
+buildUnits = async function (team, k) {
+  const m0 = money;
+  await _buildUnitsV26(team, k);
+  if (money < m0) logAct("Built " + k + " " + ATK[team].u + (k > 1 ? "s" : ""));
+};
+
+const _sendChatV26 = sendChat;
+sendChat = async function () {
+  const before = chatLastSend;
+  await _sendChatV26();
+  if (chatLastSend !== before) logAct("Sent a chat message");
+};
+
+setInterval(function () {   // notice promotions and team changes
+  if (!currentUser || !accounts[currentUser]) return;
+  const a = accounts[currentUser], sp = supportTeams[currentUser] || null;
+  if (lastRk !== null) {
+    if (a.rank !== lastRk) logAct("Rank changed to " + a.rank);
+    if ((a.team || null) !== lastTm && a.team) logAct("Joined main team: " + a.team);
+    if (sp !== lastSp && sp) logAct("Joined supporting team: " + sp);
+  }
+  lastRk = a.rank; lastTm = a.team || null; lastSp = sp;
+}, 5000);
+
+setInterval(beat, 30000);
+
+window.addEventListener("beforeunload", function () {   // closing the tab = offline right away
+  if (!currentUser) return;
+  try {
+    fetch(SUPABASE_URL + "/rest/v1/war_state", {
+      method: "POST", keepalive: true,
+      headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY, "Content-Type": "application/json",
+                 Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify([{ key: "presence:" + currentUser, data: { t: 0, a: acts }, updated_at: new Date().toISOString() }])
+    });
+  } catch (e) { /* ignore */ }
+});
+
+/* ---------- Portfolio page ---------- */
+
+(function buildPortfolio() {
+  const team = document.getElementById("team");
+  if (!team) return;
+  const p = document.createElement("div");
+  p.id = "portfolio"; p.className = "panel";
+  p.innerHTML = '<h2>📁 PORTFOLIO</h2><div id="pfBody"></div>';
+  team.parentNode.insertBefore(p, team);
+
+  const nav = document.querySelector(".navigation");
+  if (nav) {
+    const b = document.createElement("button");
+    b.textContent = "📁 PORTFOLIO";
+    b.onclick = () => openPanel("portfolio");
+    nav.insertBefore(b, nav.lastElementChild);
+  }
+})();
+
+async function pfLoad() {
+  if (pfBusy || !currentUser) return;
+  pfBusy = true;
+  try {
+    const [a, b] = await Promise.all([sb("war_state?key=like.presence:*&select=key,data"), sb("wallets?select=*")]);
+    if (a.ok) { pf.pres = {}; (await a.json()).forEach(r => { pf.pres[r.key.slice(9)] = r.data || {}; }); }
+    if (b.ok) { pf.wal = {}; (await b.json()).forEach(r => { pf.wal[r.username] = r; }); }
+  } catch (e) { console.warn("Portfolio:", e); }
+  pfBusy = false;
+  renderPortfolio();
+}
+
+function pfOpen(u) { pfSel = u; renderPortfolio(); }
+function pfBack() { pfSel = null; renderPortfolio(); }
+
+function renderPortfolio() {
+  const body = document.getElementById("pfBody"), panel = document.getElementById("portfolio");
+  if (!body || !panel || !panel.classList.contains("active") || !currentUser || !accounts[currentUser]) return;
+
+  const names = Object.keys(accounts);
+
+  if (!pfSel || !accounts[pfSel]) {
+    pfSel = null;
+    const list = names.slice().sort((a, b) =>
+      (isOnline(b) - isOnline(a)) || (ranks.indexOf(accounts[b].rank) - ranks.indexOf(accounts[a].rank)));
+    body.innerHTML = '<div class="info-box"><p class="rank-description">Tap a name to see their stats, recent activity and online status.</p>' +
+      list.map(u => {
+        const on = isOnline(u), seen = (pf.pres[u] || {}).t;
+        return `<div class="member" style="cursor:pointer;" onclick="pfOpen('${u}')">` +
+          `${on ? "🟢" : "⚪"} <b>${escapeHTML(dn(u))}</b> · ${escapeHTML(accounts[u].rank)} · Lv ${lvOf(accounts[u].rank)}<br>` +
+          `<span class="rank-description">${on ? "Online now" : seen ? "Last seen " + ago(Date.now() - seen) : "Not seen yet"}</span></div>`;
+      }).join("") + "</div>";
+    return;
+  }
+
+  const u = pfSel, a = accounts[u], me = u === currentUser;
+  const w = me ? { money, portfolio } : pf.wal[u];
+  const port = (w && w.portfolio) || {};
+  const cash = w ? Number(w.money) : null;
+  const exp = (port._x && port._x.e) || 0;
+  let worth = cash || 0, shares = [];
+  for (const t in companies) {
+    const n = port[t] || 0;
+    worth += n * companies[t].price;
+    if (n) shares.push(t + " × " + fmtN(n));
+  }
+  const lead = Object.keys(TEAM_STOCKS).filter(t => leaderOf(t) === u).map(t => t + " (owns " + TEAM_STOCKS[t] + ")")
+    .concat(TEAMS.filter(t => supportLeaderOf(t.name) === u).map(t => t.name + " (supporting)"));
+  const pres = pf.pres[u] || {}, on = isOnline(u);
+  const feed = me ? acts : (pres.a || []);
+  const st = (l, v) => `<div class="home-stat"><small>${l}</small><b>${v}</b></div>`;
+
+  body.innerHTML = `<div class="info-box"><button class="command-button" onclick="pfBack()">⬅️ BACK</button>
+    <h3 style="margin-top:14px;">${on ? "🟢" : "⚪"} ${escapeHTML(dn(u))}</h3>
+    <p class="rank-description">${on ? "Online now" : pres.t ? "Last seen " + ago(Date.now() - pres.t) : "Not seen yet"}</p>
+    <div class="home-status">
+      ${st("🎖️ Rank", escapeHTML(a.rank))}${st("⭐ Level", lvOf(a.rank))}${st("✨ EXP", fmtN(exp))}
+      ${st("🏴 Main Team", escapeHTML(teamLabel(a.team)))}${st("🛠️ Supporting Team", escapeHTML(supportLabel(supportTeams[u])))}
+      ${st("💰 Smiley Dollars", cash === null ? "No wallet yet" : formatMoney(cash))}${st("📊 Net worth", cash === null ? "—" : formatMoney(worth))}
+      ${st("💵 Salary / payday", formatMoney(SALARIES[a.rank] || 0))}
+    </div>
+    <p>📈 Shares: <b>${shares.length ? shares.join(" · ") : "none"}</b></p>
+    <p>👑 Leader of: <b>${lead.length ? escapeHTML(lead.join(", ")) : "nothing"}</b></p>
+    <h3>📜 Recent Activity</h3>` +
+    (feed.length ? feed.map(e => `<div class="member" style="margin:6px 0;"><span style="color:#888;">${escapeHTML(ago(Date.now() - e.t))}</span> — ${escapeHTML(e.x)}</div>`).join("")
+                 : '<p class="rank-description">No activity recorded yet.</p>') + "</div>";
+}
+
+setInterval(function () {
+  const p = document.getElementById("portfolio");
+  if (p && p.classList.contains("active")) pfLoad();
+}, 8000);
+
+const _openPanelV26 = openPanel;
+openPanel = async function (name) {
+  await _openPanelV26(name);
+  if (name === "portfolio") { pfSel = null; renderPortfolio(); pfLoad(); }
+};
+
+const _loginV26 = login;
+login = async function () {
+  await _loginV26();
+  if (!currentUser) return;
+  try { acts = JSON.parse(localStorage.getItem("smfaActs_" + currentUser) || "[]"); } catch (e) { acts = []; }
+  beat();
+};
+
+UPDATE_LOG.unshift({
+  v: "v26", title: "Portfolio", items: [
+    "New 📁 PORTFOLIO tab listing every soldier. Tap a name to open their profile.",
+    "Profiles show rank, level, EXP, teams, Smiley Dollars, net worth, shares, payday salary and leader seats.",
+    "Online status: a green dot while someone has the game open, or when they were last seen.",
+    "Recent activity: the last 8 things a player did, like recon missions, supply runs, materials bought, units built, chat and promotions."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
