@@ -6093,6 +6093,179 @@ setInterval(
     1000
 );
 
+    /* ===== SMFA PATCH v19: HARDER WAR (nation HP, resistances, supplies, retaliation) ===== */
+
+const HP_MAX = { Easy: 8000, Medium: 60000, Hard: 400000, Expert: 3000000, Challenge: 30000000 };
+const RAID   = { Easy: .05, Medium: .10, Hard: .18, Expert: .28, Challenge: .40 };
+const UNIT_DMG = 10, REGEN = 0.03;   // regen = 3% of max HP per hour
+const fmtN = x => Math.round(x).toLocaleString();
+
+const nResist = n => {
+  const sum = [...n].reduce((a, c) => a + c.charCodeAt(0), 0), w = sum % 4;
+  return Object.keys(ATK)[(w + 1 + (sum % 3)) % 4];   // never the same as nWeak
+};
+
+function nHP(n) {
+  const max = HP_MAX[NATIONS[n]], h = (war.world.hp || {})[n];
+  if (!h) return max;
+  return Math.min(max, h.hp + max * REGEN * ((Date.now() - h.t) / 3600000));
+}
+
+/* ---------- Launch: needs supplies, remembers if you were blind ---------- */
+
+attackNation = async function (team, n) {
+  if (currentUser !== "President") return alert("Only the President can choose which nation to attack.");
+  const blind = !getAct().intel[n];
+  let err = "";
+  await wmod("team:" + team, d => {
+    const k = Math.floor(+sendN) || d.units;
+    if (d.battle) { err = "A battle is already underway."; return d; }
+    if (k < 1 || k > d.units) { err = "You have " + fmtN(d.units) + " units available."; return d; }
+    if (!tierOpen(NATIONS[n])) { err = "That tier is still locked."; return d; }
+    const need = Math.ceil(k * 0.1);
+    for (const m of ["⛽ Fuel", "💥 Ammo"]) {
+      if ((d.mat[m] || 0) < need) { err = "Not enough " + m + ". This attack needs " + fmtN(need) + " of each."; return d; }
+    }
+    d.mat["⛽ Fuel"] -= need;
+    d.mat["💥 Ammo"] -= need;
+    d.units -= k;
+    d.battle = { nation: n, sent: k, blind, seed: Date.now() % 100000,
+                 endsAt: Date.now() + T[NATIONS[n]].min * 60000, by: currentUser };
+    return d;
+  });
+  if (err) alert(err);
+  renderWar();
+};
+
+/* ---------- Battle: damage vs HP, then the nation hits back ---------- */
+
+resolveBattle = async function (team) {
+  let nat = null, dead = false, newHp = 0;
+
+  await wmod("team:" + team, d => {
+    const b = d.battle;
+    if (!b || Date.now() < b.endsAt) return d;
+
+    nat = b.nation;
+    const tier = NATIONS[nat], t = T[tier], max = HP_MAX[tier];
+    const hp0 = nHP(nat);
+    const mult = (nWeak(nat) === team ? 1.5 : 1) * (nResist(nat) === team ? 0.4 : 1) * (b.blind ? 0.5 : 1);
+    const dmg = Math.max(1, Math.round(b.sent * UNIT_DMG * (1 + d.bonus / 100) * mult * (0.8 + seedR(b.seed) * 0.4)));
+
+    dead = dmg >= hp0;
+    const hpAfter = dead ? 0 : hp0 - dmg;
+    newHp = dead ? max : hpAfter;
+
+    // retaliation: kills troops
+    const f = 0.2 + 0.7 * Math.min(1, hp0 / (2 * dmg));
+    const lost = Math.min(b.sent, Math.ceil(b.sent * f));
+    d.units += b.sent - lost;
+
+    // retaliation: raids warehouse (and reserves if it survives)
+    const rp = RAID[tier] * (dead ? 1 / 3 : 1);
+    const stolen = [];
+    for (const m in d.mat) {
+      const take = Math.floor((d.mat[m] || 0) * rp);
+      if (take > 0) { d.mat[m] -= take; stolen.push(fmtN(take) + " " + m); }
+    }
+    let rl = 0;
+    if (!dead) { rl = Math.floor(d.units * rp / 2); d.units -= rl; }
+
+    let rew = "No conquest reward.";
+    if (dead && !d.won.includes(nat)) {
+      d.won.push(nat);
+      const pct = Math.round(t.up * (0.7 + seedR(b.seed + 1) * 0.6) * 10) / 10;
+      const name = ATK[team].ups[Math.floor(seedR(b.seed + 2) * 3)];
+      const add = Math.min(Math.max(0, WAR_CAP - d.bonus), pct);
+      d.bonus = Math.round((d.bonus + add) * 10) / 10;
+      d.ups.push({ n: name, p: add, r: t.rar });
+      if (pct > add) d.mat["🔩 Steel"] = (d.mat["🔩 Steel"] || 0) + Math.ceil((pct - add) * 2);
+      rew = "🎁 " + t.rar + " upgrade: " + name + " +" + add + "%" + (pct > add ? " (cap reached, extra became Steel)" : "");
+    } else if (dead) {
+      for (let i = 0; i < t.mats; i++) {
+        const m = MATS[Math.floor(seedR(b.seed + 10 + i) * 4)];
+        d.mat[m] = (d.mat[m] || 0) + 1;
+      }
+      rew = "📦 Repeat conquest: " + t.mats + " materials.";
+    }
+
+    d.log.unshift(new Date().toLocaleTimeString() + " — " + (dead ? "✅ DESTROYED " : "💥 HIT ") + nat + " (" + tier + "). " +
+      "Dealt " + fmtN(dmg) + " dmg" + (b.blind ? " (blind, -50%)" : "") + "; " +
+      fmtN(hpAfter) + "/" + fmtN(max) + " HP left. " +
+      "Lost " + fmtN(lost) + " of " + fmtN(b.sent) + " units" + (rl ? " + " + fmtN(rl) + " reserves" : "") + ". " +
+      "Stolen: " + (stolen.length ? stolen.join(", ") : "nothing") + ". " + rew);
+    d.log = d.log.slice(0, 10);
+    d.battle = null;
+    return d;
+  });
+
+  if (nat) {
+    await wmod("world", w => {
+      w.hp = w.hp || {};
+      w.hp[nat] = { hp: newHp, t: Date.now() };
+      if (dead) w.conquered[nat] = team;
+      return w;
+    });
+  }
+};
+
+/* ---------- War page: HP info, bulk buttons, supply warning ---------- */
+
+const _renderWarV19 = renderWar;
+renderWar = function () {
+  _renderWarV19();
+  const body = document.getElementById("warBody");
+  if (!body) return;
+  const team = document.getElementById("warTeam").value;
+  const s = getAct();
+
+  body.querySelectorAll(".member").forEach(el => {
+    const bold = el.querySelector("b"), n = bold && bold.textContent;
+    if (!NATIONS[n]) return;
+    el.innerHTML = el.innerHTML.replace(/ · power ~\d+ · weak to [A-Za-z ]+/, "");
+    const line = s.intel[n]
+      ? "<br>🛡️ HP " + fmtN(nHP(n)) + " / " + fmtN(HP_MAX[NATIONS[n]]) +
+        " · resists <b>" + nResist(n) + "</b> · weak to <b>" + nWeak(n) + "</b>"
+      : "<br>🛡️ HP ??? · scout with Recon (attacking blind = half damage)";
+    const btn = el.querySelector("button");
+    if (btn) btn.insertAdjacentHTML("beforebegin", line); else el.insertAdjacentHTML("beforeend", line);
+  });
+
+  const nh = Array.from(body.querySelectorAll("h3")).find(h => h.textContent.includes("Nations"));
+  if (nh && !body.querySelector("#v19Note")) {
+    nh.insertAdjacentHTML("afterend",
+      '<p id="v19Note" class="rank-description">⚠️ Nations have HP that slowly regenerates. They kill your troops and raid your warehouse after every battle. ' +
+      "Each attack burns 1 Fuel and 1 Ammo per 10 units sent.</p>");
+  }
+
+  const lastBuild = Array.from(body.querySelectorAll("button")).filter(b => (b.getAttribute("onclick") || "").startsWith("buildUnits")).pop();
+  if (lastBuild) {
+    lastBuild.insertAdjacentHTML("afterend",
+      `<button class="command-button" onclick="buildUnits('${team}',100)">BUILD 100</button>` +
+      `<button class="command-button" onclick="buildUnits('${team}',1000)">BUILD 1000</button>`);
+  }
+
+  const lastBuy = Array.from(body.querySelectorAll("button")).filter(b => (b.getAttribute("onclick") || "").startsWith("buyMat")).pop();
+  if (lastBuy) {
+    lastBuy.insertAdjacentHTML("afterend",
+      `<button class="command-button" onclick="buyMat('${team}','⛽ Fuel',100)">+100 ⛽ Fuel</button>` +
+      `<button class="command-button" onclick="buyMat('${team}','💥 Ammo',100)">+100 💥 Ammo</button>`);
+  }
+};
+
+/* ---------- Update log ---------- */
+
+UPDATE_LOG.unshift({
+  v: "v19", title: "Harder war", items: [
+    "Nations now have HP (Easy 8,000 up to Challenge 30,000,000). Damage persists between attacks and HP regenerates 3% per hour.",
+    "Unit count alone no longer wins. Each nation resists one branch (40% damage) and is weak to another (150%).",
+    "Attacking an unscouted nation means fighting blind, with half damage.",
+    "Each attack burns 1 Fuel and 1 Ammo per 10 units sent.",
+    "Nations fight back: they kill your troops, raid up to 40% of every material in your warehouse, and hit your reserves if they survive.",
+    "A nation must be destroyed (HP to 0) to be conquered. Conquered nations rebuild to full HP.",
+    "New BUILD 100, BUILD 1000, and +100 Fuel/Ammo buttons on the War page."
+  ]
+});
 
 /* ==================================================
    SAVE BEFORE LEAVING
