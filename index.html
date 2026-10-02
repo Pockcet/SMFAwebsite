@@ -6479,6 +6479,262 @@ UPDATE_LOG.unshift({
     "The Advance World button is now World Day and only shows the current day. A popup announces each new day."
   ]
 });
+    /* ===== SMFA PATCH v22: CHANGE USERNAME + CHANGE COMPANY NAME ===== */
+
+let renaming = false, kicked = false;
+let cnameCache = {};
+try { cnameCache = JSON.parse(localStorage.getItem("smfaCompanyNames") || "{}"); } catch (e) { /* ignore */ }
+
+/* ---------- Company names (shared through war_state) ---------- */
+
+function applyCompanyNames(map, render) {
+  let changed = false;
+  for (const t in map) {
+    if (companies[t] && companies[t].name !== map[t]) { companies[t].name = map[t]; changed = true; }
+  }
+  if (changed && render) { renderStocks(); renderTeam(); }
+}
+applyCompanyNames(cnameCache, false);
+
+async function loadCompanyNames() {
+  try {
+    const r = await sb("war_state?key=eq.companynames&select=*");
+    if (!r.ok) return;
+    const rows = await r.json();
+    if (rows[0] && rows[0].data) {
+      cnameCache = rows[0].data;
+      localStorage.setItem("smfaCompanyNames", JSON.stringify(cnameCache));
+      applyCompanyNames(cnameCache, true);
+    }
+  } catch (e) { /* ignore */ }
+}
+setInterval(function () { if (currentUser) loadCompanyNames(); }, 10000);
+
+const ownedTickers = u => Object.keys(TEAM_STOCKS).filter(t => leaderOf(t) === u).map(t => TEAM_STOCKS[t]);
+
+async function changeCompanyName(t) {
+  const say = (x, ok) => {
+    const m = document.getElementById("companyNameResult");
+    if (m) { m.textContent = x; m.className = ok ? "success" : "error"; }
+  };
+  const input = document.getElementById("cname_" + t);
+  const name = (input ? input.value : "").trim().replace(/\s+/g, " ");
+
+  if (!/^[A-Za-z0-9 .,&'\-]{3,30}$/.test(name)) {
+    return say("❌ Name must be 3–30 characters: letters, numbers, spaces and . , & ' - only.");
+  }
+  say("📡 Saving...", true);
+
+  try {
+    await loadAccounts();   // refreshes who the leaders are
+    if (!ownedTickers(currentUser).includes(t)) {
+      return say("❌ Only the company's owner (its team leader) can rename it.");
+    }
+    if (Object.keys(companies).some(k => k !== t && companies[k].name.toLowerCase() === name.toLowerCase())) {
+      return say("❌ Another company already has that name.");
+    }
+
+    let cur = {};
+    const r0 = await sb("war_state?key=eq.companynames&select=*");
+    if (r0.ok) { const rows = await r0.json(); if (rows[0] && rows[0].data) cur = rows[0].data; }
+    cur[t] = name;
+
+    const r = await sb("war_state", {
+      method: "POST", headers: UPSERT,
+      body: JSON.stringify([{ key: "companynames", data: cur, updated_at: new Date().toISOString() }])
+    });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+
+    cnameCache = cur;
+    localStorage.setItem("smfaCompanyNames", JSON.stringify(cur));
+    applyCompanyNames(cur, true);
+    say("✅ Company renamed to " + name + "!", true);
+    renderV22UI(true);
+  } catch (e) {
+    console.error(e);
+    say("⚠️ Could not save. (" + e.message + ")");
+  }
+}
+
+/* ---------- Change username ---------- */
+
+async function changeUsername() {
+  const say = (x, ok) => {
+    const m = document.getElementById("usernameResult");
+    if (m) { m.textContent = x; m.className = ok ? "success" : "error"; }
+  };
+  if (!currentUser || !accounts[currentUser]) return;
+  if (currentUser === "President") return say("❌ The President's username can't be changed.");
+
+  const old = currentUser;
+  const nu = document.getElementById("newUsername").value.trim();
+  const pw = document.getElementById("renamePassword").value;
+
+  if (!/^[A-Za-z0-9_]{3,16}$/.test(nu)) return say("❌ Username must be 3–16 letters, numbers or underscores.");
+  if (["__proto__", "constructor", "prototype"].includes(nu.toLowerCase())) return say("❌ That username isn't allowed.");
+  if (nu === old) return say("❌ That's already your username.");
+  if (pw !== accounts[old].password) return say("❌ Wrong password.");
+
+  say("📡 Changing username...", true);
+  const wasReady = walletReady;
+  walletReady = false;
+  renaming = true;
+
+  try {
+    await loadAccounts();
+    if (Object.keys(accounts).some(n => n !== old && n.toLowerCase() === nu.toLowerCase())) {
+      throw new Error("That username is already taken.");
+    }
+
+    const q = "=eq." + encodeURIComponent(old);
+    const r = await sb("accounts?username" + q, {
+      method: "PATCH",
+      headers: { "Prefer": "return=representation" },
+      body: JSON.stringify({ username: nu })
+    });
+    if (r.status === 409) throw new Error("That username is already taken.");
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    if ((await r.json()).length === 0) throw new Error("Your account wasn't found online.");
+
+    // Move everything that points at the old name (best effort)
+    const patch = (path, body) => sb(path, {
+      method: "PATCH", headers: { "Prefer": "return=minimal" }, body: JSON.stringify(body)
+    });
+    try {
+      let w = await patch("wallets?username" + q, { username: nu });
+      if (w.status === 409) {   // leftover wallet from a deleted account with that name
+        await sb("wallets?username=eq." + encodeURIComponent(nu), { method: "DELETE" });
+        await patch("wallets?username" + q, { username: nu });
+      }
+      await patch("team_leaders?leader" + q, { leader: nu });
+      await patch("support_leaders?leader" + q, { leader: nu });
+      await patch("promotion_messages?sender" + q, { sender: nu });
+    } catch (e) { console.warn("Some records could not be moved:", e); }
+
+    // Local state (all synchronous, so timers never see a half-renamed user)
+    accounts[nu] = accounts[old]; delete accounts[old];
+    for (const t in teamLeaders) if (teamLeaders[t] === old) teamLeaders[t] = nu;
+    for (const t in supportLeaders) if (supportLeaders[t] === old) supportLeaders[t] = nu;
+    if (supportTeams[old] !== undefined) { supportTeams[nu] = supportTeams[old]; delete supportTeams[old]; }
+    ["smfaWallet_", "smfaActions_", "smfaSeenRank_"].forEach(p => {
+      const v = localStorage.getItem(p + old);
+      if (v !== null) { localStorage.setItem(p + nu, v); localStorage.removeItem(p + old); }
+    });
+    localStorage.setItem("smfaAccounts", JSON.stringify(accounts));
+    localStorage.setItem("smfaLeaders", JSON.stringify(teamLeaders));
+    saveSupportCache();
+    currentUser = nu;
+    walletUser = nu;
+
+    document.getElementById("newUsername").value = "";
+    document.getElementById("renamePassword").value = "";
+    say("✅ You are now " + nu + "!", true);
+    updateCommandCenter();
+    renderTeam();
+    renderStocks();
+    if (typeof renderHome === "function") renderHome();
+  } catch (e) {
+    console.error(e);
+    say("⚠️ " + e.message);
+  }
+  walletReady = wasReady;
+  renaming = false;
+}
+
+// Remove renamed (ghost) accounts, and sign out a device whose account was renamed elsewhere
+const _loadAccountsV22 = loadAccounts;
+loadAccounts = async function () {
+  await _loadAccountsV22();
+  if (renaming) return;
+  try {
+    const r = await sb("accounts?select=username");
+    if (r.ok) {
+      const names = (await r.json()).map(x => x.username);
+      if (names.length) Object.keys(accounts).forEach(u => {
+        if (u !== "President" && !names.includes(u)) delete accounts[u];
+      });
+    }
+  } catch (e) { /* ignore */ }
+  if (currentUser && !accounts[currentUser] && !kicked) {
+    kicked = true;
+    alert("Your account was renamed or removed. Please log in again.");
+    location.reload();
+  }
+};
+
+/* ---------- Command Center sections ---------- */
+
+(function buildV22UI() {
+  const acc = Array.from(document.querySelectorAll("#command .account-section"))
+    .find(el => el.querySelector("h3") && el.querySelector("h3").textContent.includes("Account Settings"));
+  if (!acc) return;
+
+  const cbox = document.createElement("div");
+  cbox.className = "account-section"; cbox.id = "companyNameBox"; cbox.style.display = "none";
+  cbox.innerHTML = '<h3>🏢 Company Name</h3>' +
+    '<p class="rank-description">Only the owner (the leader of the team that owns the company) can rename it.</p>' +
+    '<div id="companyNameRows"></div><p id="companyNameResult"></p>';
+  acc.parentNode.insertBefore(cbox, acc);
+
+  const ubox = document.createElement("div");
+  ubox.className = "account-section"; ubox.id = "usernameBox";
+  ubox.innerHTML = '<h3>🪪 Change Username</h3>' +
+    '<p id="usernameNote" class="rank-description"></p>' +
+    '<div id="usernameForm">' +
+    '<input class="account-input" id="newUsername" placeholder="New username" maxlength="16" autocomplete="off">' +
+    '<input class="account-input" type="password" id="renamePassword" placeholder="Current password">' +
+    '<button class="command-button" onclick="changeUsername()">✏️ CHANGE USERNAME</button></div>' +
+    '<p id="usernameResult"></p>';
+  acc.parentNode.insertBefore(ubox, acc);
+})();
+
+let v22sig = "";
+function renderV22UI(force) {
+  if (!currentUser || !accounts[currentUser]) return;
+
+  const isPres = currentUser === "President";
+  const form = document.getElementById("usernameForm"), note = document.getElementById("usernameNote");
+  if (form) form.style.display = isPres ? "none" : "block";
+  if (note) note.textContent = isPres
+    ? "The President's username is fixed, because the whole game recognises it by that name."
+    : "Pick a new name (3–16 letters, numbers or underscores). Your rank, team, money and leader seat all move with you.";
+
+  const box = document.getElementById("companyNameBox"), rows = document.getElementById("companyNameRows");
+  if (!box || !rows) return;
+  const owned = ownedTickers(currentUser);
+  box.style.display = owned.length ? "block" : "none";
+
+  const sig = owned.map(t => t + companies[t].name).join("|");
+  if (!force && sig === v22sig) return;
+  if (!force && rows.contains(document.activeElement)) return;
+  v22sig = sig;
+
+  rows.innerHTML = owned.map(t =>
+    '<div class="member">🏢 <b>' + escapeHTML(companies[t].name) + '</b> (' + t + ')<br>' +
+    '<input class="account-input" id="cname_' + t + '" placeholder="New company name" maxlength="30">' +
+    '<button class="command-button" onclick="changeCompanyName(\'' + t + '\')">✏️ RENAME</button></div>').join("");
+}
+
+const _updateCommandCenterV22 = updateCommandCenter;
+updateCommandCenter = function () { _updateCommandCenterV22(); renderV22UI(); };
+
+const _openPanelV22 = openPanel;
+openPanel = async function (name) {
+  await _openPanelV22(name);
+  if (name === "command") renderV22UI(true);
+};
+
+const _loginV22 = login;
+login = async function () { await _loginV22(); if (currentUser) loadCompanyNames(); };
+
+UPDATE_LOG.unshift({
+  v: "v22", title: "Change username & company name", items: [
+    "You can now change your username in the Command Center (needs your password). Your rank, teams, wallet, leader seats and promotion requests all move to the new name.",
+    "A device logged in under the old name is signed out within a few seconds. The President's username can't be changed.",
+    "Company owners (the leader of the team that owns a company) can rename their company. The new name shows on every device.",
+    "Company names: 3–30 characters, letters, numbers, spaces and . , & ' - only, and no duplicates."
+  ]
+});
 
 /* ==================================================
    START
