@@ -6735,6 +6735,157 @@ UPDATE_LOG.unshift({
     "Company names: 3–30 characters, letters, numbers, spaces and . , & ' - only, and no duplicates."
   ]
 });
+    /* ===== SMFA PATCH v23: PRESIDENT DISPLAY NAME ===== */
+
+let dnames = {};
+try { dnames = JSON.parse(localStorage.getItem("smfaDisplayNames") || "{}"); } catch (e) { /* ignore */ }
+
+const dn = u => dnames[u] || u;
+
+/* Swap "President" for the display name in everything people look at (never in Rank) */
+function applyDisplayNames() {
+  const cu = document.getElementById("currentUsername");
+  if (cu && currentUser) cu.textContent = dn(currentUser);
+
+  const name = dnames.President;
+  if (!name) return;
+
+  document.querySelectorAll(
+    "#onlinePersonnel b,#stockList b,#baseInfo b,#homeStatus b,#warBody b,#warRoomBody b"
+  ).forEach(el => {
+    if (el.textContent.trim() !== "President") return;
+
+    const prev = el.previousSibling;
+    if (prev && prev.nodeType === 3 && /Rank:\s*$/.test(prev.textContent)) return;   // keep the rank
+
+    const label = el.previousElementSibling;
+    if (label && /Rank/.test(label.textContent)) return;                              // Home rank stat
+
+    el.textContent = name;
+  });
+}
+
+async function loadDisplayNames() {
+  try {
+    const r = await sb("war_state?key=eq.displaynames&select=*");
+    if (!r.ok) return;
+    const rows = await r.json();
+    dnames = (rows[0] && rows[0].data) || {};
+    localStorage.setItem("smfaDisplayNames", JSON.stringify(dnames));
+    applyDisplayNames();
+  } catch (e) { /* ignore */ }
+}
+
+async function changeDisplayName(reset) {
+  const say = (x, ok) => {
+    const m = document.getElementById("displayNameResult");
+    if (m) { m.textContent = x; m.className = ok ? "success" : "error"; }
+  };
+  if (currentUser !== "President") return say("❌ Only the President can set a display name.");
+
+  let name = "";
+  if (!reset) {
+    name = document.getElementById("newDisplayName").value.trim().replace(/\s+/g, " ");
+    if (!/^[A-Za-z0-9 ._'\-]{3,20}$/.test(name)) {
+      return say("❌ 3–20 characters: letters, numbers, spaces and . _ ' - only.");
+    }
+  }
+  say("📡 Saving...", true);
+
+  try {
+    if (!reset) {
+      await loadAccounts();
+      if (Object.keys(accounts).some(u => u !== "President" && u.toLowerCase() === name.toLowerCase())) {
+        return say("❌ A player already uses that name.");
+      }
+    }
+
+    let cur = {};
+    const r0 = await sb("war_state?key=eq.displaynames&select=*");
+    if (r0.ok) { const rows = await r0.json(); if (rows[0] && rows[0].data) cur = rows[0].data; }
+    if (reset) delete cur.President; else cur.President = name;
+
+    const r = await sb("war_state", {
+      method: "POST", headers: UPSERT,
+      body: JSON.stringify([{ key: "displaynames", data: cur, updated_at: new Date().toISOString() }])
+    });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+
+    dnames = cur;
+    localStorage.setItem("smfaDisplayNames", JSON.stringify(cur));
+    document.getElementById("newDisplayName").value = "";
+    say(reset ? "✅ Display name reset." : "✅ People now see you as " + name + "!", true);
+
+    renderTeam();
+    renderStocks();
+    if (typeof renderHome === "function") renderHome();
+    updateCommandCenter();
+    applyDisplayNames();
+  } catch (e) {
+    console.error(e);
+    say("⚠️ Could not save. (" + e.message + ")");
+  }
+}
+
+/* ---------- Command Center box (President only) ---------- */
+
+(function buildDisplayNameBox() {
+  const anchor = document.getElementById("usernameBox");
+  if (!anchor) return;
+  const box = document.createElement("div");
+  box.className = "account-section";
+  box.id = "displayNameBox";
+  box.style.display = "none";
+  box.innerHTML =
+    '<h3>🎭 Display Name</h3>' +
+    '<p class="rank-description">Your username stays <b>President</b> so the game still recognises you, ' +
+    'but everyone else sees this name. Your rank still shows as President.</p>' +
+    '<p>Currently shown as: <b id="currentDisplayName">President</b></p>' +
+    '<input class="account-input" id="newDisplayName" placeholder="New display name" maxlength="20" autocomplete="off">' +
+    '<button class="command-button" onclick="changeDisplayName(false)">✏️ SET DISPLAY NAME</button>' +
+    '<button class="command-button" onclick="changeDisplayName(true)">↩️ RESET</button>' +
+    '<p id="displayNameResult"></p>';
+  anchor.parentNode.insertBefore(box, anchor);
+})();
+
+/* ---------- Keep every screen updated ---------- */
+
+const _updateCommandCenterV23 = updateCommandCenter;
+updateCommandCenter = function () {
+  _updateCommandCenterV23();
+  const box = document.getElementById("displayNameBox");
+  if (box) box.style.display = currentUser === "President" ? "block" : "none";
+  const cd = document.getElementById("currentDisplayName");
+  if (cd) cd.textContent = dn("President");
+  applyDisplayNames();
+};
+
+["renderTeam", "renderStocks", "renderHome", "showBaseInfo", "renderWar", "renderWarRoom"].forEach(fn => {
+  const orig = window[fn];
+  if (typeof orig !== "function") return;
+  window[fn] = function () {
+    const out = orig.apply(this, arguments);
+    applyDisplayNames();
+    return out;
+  };
+});
+
+setInterval(function () { if (currentUser) applyDisplayNames(); }, 1000);
+setInterval(function () { if (currentUser) loadDisplayNames(); }, 10000);
+
+const _loginV23 = login;
+login = async function () {
+  await _loginV23();
+  if (currentUser) loadDisplayNames();
+};
+
+UPDATE_LOG.unshift({
+  v: "v23", title: "President display name", items: [
+    "The President can now set a display name in the Command Center. The username stays President, so the game still recognises the account.",
+    "People see the display name on the Team panel, leader and owner lines, the map, the War pages and Home. The rank still shows as President.",
+    "The display name is saved online and syncs to every device. A Reset button brings back the plain President label."
+  ]
+});
 
 /* ==================================================
    START
