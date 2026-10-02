@@ -8010,6 +8010,157 @@ UPDATE_LOG.unshift({
     "Removed \"Command Centre chat\" from Coming Soon, since chat is live."
   ]
 });
+    /* ===== SMFA PATCH v28.5: PROMOTE + GIVE MONEY (PRESIDENT) ===== */
+
+let n2Busy = false;
+
+/* ---------- Promote ---------- */
+
+async function promotePlayer(u) {
+  if (currentUser !== "President" || u === "President") return;
+  unfocus();
+  const reason = (pfDraft.preason || "").trim().replace(/\s+/g, " ") || "No reason given";
+  try {
+    await loadAccounts();
+    const a = accounts[u];
+    if (!a) throw new Error("Player not found.");
+    const cur = ranks.indexOf(a.rank), tgt = ranks.indexOf(pfDraft.prank), top = ranks.indexOf("Senior Commander");
+    if (tgt < 0) throw new Error("Choose a rank first.");
+    if (tgt <= cur) throw new Error("Pick a rank higher than " + a.rank + ".");
+    if (tgt > top) throw new Error("That rank can't be granted.");
+    if (!confirm("Promote " + dn(u) + " from " + a.rank + " to " + ranks[tgt] + "?")) return;
+
+    const r = await sb("accounts?username=eq." + encodeURIComponent(u), {
+      method: "PATCH", headers: { "Prefer": "return=representation" }, body: JSON.stringify({ rank: ranks[tgt] })
+    });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    if ((await r.json()).length === 0) throw new Error("Account not found online.");
+
+    const old = a.rank;
+    a.rank = ranks[tgt];
+    localStorage.setItem("smfaAccounts", JSON.stringify(accounts));
+    await sendNotice(u, { type: "promote", rank: ranks[tgt], from: old, reason, by: "President" });
+    pfDraft.prank = ""; pfDraft.preason = "";
+    pfMsg = "✅ " + dn(u) + " was promoted from " + old + " to " + ranks[tgt] + ".";
+    logAct("⬆️ Promoted " + dn(u) + " to " + ranks[tgt]);
+    renderTeam(); updateCommandCenter();
+    await pfLoadNotices(u);
+  } catch (e) { pfMsg = "⚠️ " + e.message; renderPortfolio(); }
+}
+
+/* ---------- Give money ---------- */
+
+async function giveMoney(u) {
+  if (currentUser !== "President" || u === "President") return;
+  unfocus();
+  const amt = Math.floor(+pfDraft.gamt), reason = (pfDraft.greason || "").trim().replace(/\s+/g, " ") || "A gift from the President";
+  try {
+    if (!(amt >= 1 && amt <= 1e9)) throw new Error("Enter an amount between 1 and 1,000,000,000 SD.");
+    if (!confirm("Give " + dn(u) + " " + fmtN(amt) + " SD?\nReason: " + reason)) return;
+    await sendNotice(u, { type: "give", amount: amt, reason, by: "President" });
+    pfDraft.gamt = ""; pfDraft.greason = "";
+    pfMsg = "✅ " + fmtN(amt) + " SD sent to " + dn(u) + ". They receive it the next time they have the game open.";
+    logAct("💰 Gave " + dn(u) + " " + fmtN(amt) + " SD");
+    await pfLoadNotices(u);
+  } catch (e) { pfMsg = "⚠️ " + e.message; renderPortfolio(); }
+}
+
+/* ---------- Player side: receive promotions and gifts ---------- */
+
+async function pollNotices2() {
+  if (n2Busy || !expReady()) return;
+  n2Busy = true;
+  try {
+    const r = await sb("war_state?key=eq." + encodeURIComponent("notices:" + currentUser) + "&select=data");
+    if (!r.ok) return;
+    const rows = await r.json();
+    const list = (rows[0] && rows[0].data && rows[0].data.list) || [];
+    const x = xs();
+    if (!x.n2) x.n2 = [];
+    const fresh = list.filter(n => (n.type === "promote" || n.type === "give") && !x.n2.includes(n.id)).reverse();
+
+    for (const n of fresh) {
+      x.n2.push(n.id);
+      if (n.type === "promote") {
+        const i = ranks.indexOf(n.rank);
+        if (i >= 0) x.e = Math.max(x.e || 0, cumFor(i));
+        payToast("⬆️ <b>You were promoted to " + escapeHTML(n.rank) + "!</b><br><span style='color:#aaa;font-size:13px;'>Reason: " + escapeHTML(n.reason) + "</span>");
+        logAct("⬆️ Promoted to " + n.rank + ". Reason: " + n.reason);
+      } else {
+        const amt = Math.max(0, Number(n.amount) || 0);
+        money += amt;
+        payToast("💰 <b>You received " + fmtN(amt) + " SD from the President</b><br><span style='color:#aaa;font-size:13px;'>" + escapeHTML(n.reason) + "</span>");
+        logAct("💰 Received " + fmtN(amt) + " SD. " + n.reason);
+      }
+    }
+    if (fresh.length) {
+      x.n2 = x.n2.slice(-60);
+      saveGame(); pushWallet();
+      const b = document.getElementById("balance");
+      if (b) b.textContent = formatMoney(money);
+      updateCommandCenter();
+    }
+  } catch (e) { console.warn("Notices 2:", e); }
+  finally { n2Busy = false; }
+}
+setInterval(pollNotices2, 8000);
+
+/* ---------- President tools: add Promote under Demote and Give Money under Fine ---------- */
+
+const _pfToolsV285 = pfTools;
+pfTools = function (u) {
+  let h = _pfToolsV285(u);
+  const a = accounts[u];
+  if (!a) return h;
+
+  const cur = ranks.indexOf(a.rank), top = ranks.indexOf("Senior Commander");
+  const D = k => escapeHTML(pfDraft[k] || "");
+  const popts = ranks.slice(cur + 1, top + 1).map((r, j) =>
+    `<option value="${escapeHTML(r)}"${pfDraft.prank === r ? " selected" : ""}>Lv ${cur + j + 2} · ${escapeHTML(r)}</option>`).join("");
+
+  const promo = '<div class="member"><b>⬆️ Promote</b><br>' + (cur < top
+    ? `<select class="promo-select" style="margin-top:6px;" onchange="pfDraft.prank=this.value"><option value="">— choose rank —</option>${popts}</select>
+       <input class="account-input" maxlength="120" placeholder="Reason (optional)" value="${D("preason")}" oninput="pfDraft.preason=this.value">
+       <button class="command-button" onclick="promotePlayer('${u}')">PROMOTE</button>
+       <p class="rank-description">Nobody can be promoted to President.</p>`
+    : '<span class="rank-description">Already at the highest rank a promotion can grant.</span>') + "</div>";
+
+  const give = `<div class="member"><b>💰 Give Money</b><br>
+    <input type="number" min="1" class="account-input" placeholder="Amount (SD)" value="${D("gamt")}" oninput="pfDraft.gamt=this.value">
+    <input class="account-input" maxlength="120" placeholder="Reason (optional)" value="${D("greason")}" oninput="pfDraft.greason=this.value">
+    <button class="command-button" onclick="giveMoney('${u}')">GIVE MONEY</button></div>`;
+
+  const notes = pfNot[u] || [];
+  const rec = '<div class="member"><b>📋 Records</b><br>' + (notes.length ? notes.map(n => {
+    let t;
+    if (n.type === "fine") t = "💸 Fined " + fmtN(n.amount) + " SD";
+    else if (n.type === "demote") t = "⬇️ Demoted from " + escapeHTML(n.from || "?") + " to " + escapeHTML(n.rank);
+    else if (n.type === "promote") t = "⬆️ Promoted from " + escapeHTML(n.from || "?") + " to " + escapeHTML(n.rank);
+    else if (n.type === "give") t = "💰 Given " + fmtN(n.amount) + " SD";
+    else t = escapeHTML(n.type || "");
+    return `<span style="color:#888;">${escapeHTML(new Date(n.t).toLocaleString())}</span> — ${t}` + (n.reason ? ": " + escapeHTML(n.reason) : "");
+  }).join("<br>") : '<span class="rank-description">No fines, demotions, promotions or payments on record.</span>') + "</div>";
+
+  const fineMark = '<div class="member"><b>💸 Fine</b>', recMark = '<div class="member"><b>📋 Records</b>';
+  const fi = h.indexOf(fineMark), ri = h.indexOf(recMark);
+  if (fi < 0 || ri < 0) return h;
+  return h.slice(0, fi) + promo + h.slice(fi, ri) + give + rec;
+};
+
+const _pfOpenV285 = pfOpen;
+pfOpen = function (u) {
+  _pfOpenV285(u);
+  pfDraft.prank = ""; pfDraft.preason = ""; pfDraft.gamt = ""; pfDraft.greason = "";
+};
+
+UPDATE_LOG.unshift({
+  v: "v28.5", title: "Promote & give money", items: [
+    "The President can now promote players from their Portfolio profile, right below Demote. Nobody can be promoted to President.",
+    "A promoted player gets a popup with the reason and the PROMOTED! animation, and their EXP is lifted to the start of the new level.",
+    "The President can give players money, right below Fine, with an optional reason. The player receives it when they next have the game open.",
+    "Records on each profile now also list promotions and gifts, with reasons."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
