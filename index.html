@@ -6886,6 +6886,210 @@ UPDATE_LOG.unshift({
     "The display name is saved online and syncs to every device. A Reset button brings back the plain President label."
   ]
 });
+    /* ===== SMFA PATCH v24: CHAT ===== */
+
+const CHAT_MAX = 200, CHAT_GAP = 2000;
+let chatCh = "global", chatMsgs = [], chatBusy = false, chatLastSend = 0, chatSig = "",
+    chatDMs = [], chatInit = false, chatOptSig = "", chatSeen = {};
+try { chatSeen = JSON.parse(localStorage.getItem("smfaChatSeen") || "{}"); } catch (e) { /* ignore */ }
+
+const chName = u => (typeof dn === "function" ? dn(u) : u);
+const dmKey = (a, b) => "dm:" + [a, b].sort().join("|");
+const otherOf = c => c.slice(3).split("|").find(x => x !== currentUser) || "?";
+const chatActive = () => { const p = document.getElementById("chat"); return !!p && p.classList.contains("active"); };
+
+function chatVisible(c) {
+  const a = accounts[currentUser];
+  if (c === "global" || c === "announce") return true;
+  if (c.startsWith("team:")) return !!a && a.team === c.slice(5);
+  if (c.startsWith("dm:")) return c.slice(3).split("|").includes(currentUser);
+  return false;
+}
+function chatLabel(c) {
+  if (c === "global") return "🌐 Global";
+  if (c === "announce") return "📢 Announcements";
+  if (c.startsWith("team:")) return "🏴 " + c.slice(5);
+  if (c.startsWith("dm:")) { const [a, b] = c.slice(3).split("|"); return "✉️ " + chName(a) + " ↔ " + chName(b); }
+  return c;
+}
+
+(function buildChat() {
+  const team = document.getElementById("team");
+  if (!team) return;
+  const p = document.createElement("div");
+  p.id = "chat"; p.className = "panel";
+  p.innerHTML = '<h2>💬 CHAT</h2><div class="info-box">' +
+    '<p class="rank-description">🔍 Moderation notice: the President can review all chats, including private messages. Never share passwords.</p>' +
+    'Channel: <select id="chatChannel" class="promo-select" onchange="chatPick(this.value)"></select> ' +
+    'Message a player: <select id="chatDM" class="promo-select" onchange="chatDMPick(this.value)"></select>' +
+    '<div id="chatBox" style="height:340px;overflow-y:auto;background:#101010;border:1px solid #333;border-radius:8px;padding:10px;margin:12px 0;"></div>' +
+    '<div id="chatInputRow"><input id="chatInput" class="account-input" maxlength="200" placeholder="Type a message..." autocomplete="off">' +
+    '<button class="command-button" onclick="sendChat()">SEND</button></div><p id="chatResult"></p></div>';
+  team.parentNode.insertBefore(p, team);
+
+  document.getElementById("chatInput").addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.stopPropagation(); sendChat(); }
+  });
+
+  const nav = document.querySelector(".navigation");
+  if (nav) {
+    const b = document.createElement("button");
+    b.innerHTML = '💬 CHAT <span id="chatBadge" style="display:none;background:#ff4d4d;color:#fff;border-radius:10px;padding:1px 7px;font-size:12px;margin-left:4px;"></span>';
+    b.onclick = () => openPanel("chat");
+    nav.insertBefore(b, nav.lastElementChild);
+  }
+})();
+
+function chatSelects() {
+  const sel = document.getElementById("chatChannel"), dm = document.getElementById("chatDM");
+  if (!sel || !dm || !currentUser || !accounts[currentUser]) return;
+
+  const opts = [["global", "🌐 Global"], ["announce", "📢 Announcements"]];
+  const t = accounts[currentUser].team;
+  if (t) opts.push(["team:" + t, "🏴 " + t + " team"]);
+  const dms = chatDMs.slice();
+  if (chatCh.startsWith("dm:") && !dms.includes(chatCh)) dms.push(chatCh);
+  dms.forEach(c => opts.push([c, "✉️ " + chName(otherOf(c))]));
+  if (currentUser === "President") opts.push(["all", "👁️ All chats (admin)"]);
+
+  const sig = JSON.stringify(opts) + Object.keys(accounts).join(",");
+  if (sig !== chatOptSig) {
+    chatOptSig = sig;
+    sel.innerHTML = opts.map(o => `<option value="${escapeHTML(o[0])}">${escapeHTML(o[1])}</option>`).join("");
+    dm.innerHTML = '<option value="">— choose —</option>' + Object.keys(accounts).filter(u => u !== currentUser)
+      .map(u => `<option value="${escapeHTML(u)}">${escapeHTML(chName(u))}</option>`).join("");
+  }
+  sel.value = chatCh;
+  document.getElementById("chatInputRow").style.display = chatCh === "all" ? "none" : "block";
+}
+
+function chatPick(c) { chatCh = c; chatSig = ""; chatMsgs = []; renderChat(); chatPoll(); chatSelects(); }
+function chatDMPick(u) { if (u) { chatPick(dmKey(currentUser, u)); document.getElementById("chatDM").value = ""; } }
+function openChatDM(u) { chatCh = dmKey(currentUser, u); chatSig = ""; chatMsgs = []; openPanel("chat"); }
+
+function renderChat() {
+  const box = document.getElementById("chatBox");
+  if (!box) return;
+  const sig = chatCh + JSON.stringify(chatMsgs.map(m => m.id));
+  if (sig === chatSig) return;
+  chatSig = sig;
+  const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+
+  box.innerHTML = chatMsgs.length ? chatMsgs.map(m => {
+    const a = accounts[m.sender];
+    const tag = a ? ((a.team ? teamLabel(a.team).split(" ")[0] + " " : "") + a.rank) : "";
+    const del = currentUser === "President" ? ` <a style="cursor:pointer;" onclick="deleteChat(${Number(m.id)})">🗑️</a>` : "";
+    const ch = chatCh === "all" ? ` <span style="color:#f1c40f;">[${escapeHTML(chatLabel(m.channel))}]</span>` : "";
+    return `<div style="margin:6px 0;"><b style="color:#00ff88;">${escapeHTML(chName(m.sender))}</b> ` +
+      `<span style="color:#888;font-size:12px;">${escapeHTML(tag)} · ${escapeHTML(new Date(m.created_at).toLocaleTimeString())}</span>${ch}${del}<br>` +
+      `${escapeHTML(m.body)}</div>`;
+  }).join("") : '<span style="color:#888;">No messages yet. Say hi!</span>';
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+async function sendChat() {
+  const say = (x, ok) => { const m = document.getElementById("chatResult"); if (m) { m.textContent = x; m.className = ok ? "success" : "error"; } };
+  const input = document.getElementById("chatInput");
+  const text = input.value.trim().replace(/\s+/g, " ");
+  if (!currentUser || !text || chatCh === "all") return;
+  if (!chatVisible(chatCh)) return say("❌ You can't post in this channel.");
+  if (chatCh === "announce" && currentUser !== "President") return say("❌ Only the President can post announcements.");
+  if (text.length > CHAT_MAX) return say("❌ Max " + CHAT_MAX + " characters.");
+  if (Date.now() - chatLastSend < CHAT_GAP) return say("⏳ Slow down a little.");
+
+  try {
+    const enc = encodeURIComponent;
+    const r0 = await sb("chat_messages?channel=eq." + enc(chatCh) + "&sender=eq." + enc(currentUser) + "&order=id.desc&limit=1&select=body");
+    if (r0.ok) {
+      const last = (await r0.json())[0];
+      if (last && last.body.toLowerCase() === text.toLowerCase()) return say("❌ You can't send the same message twice in a row.");
+    }
+    const r = await sb("chat_messages", {
+      method: "POST", headers: { "Prefer": "return=minimal" },
+      body: JSON.stringify([{ channel: chatCh, sender: currentUser, body: text }])
+    });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    chatLastSend = Date.now();
+    input.value = ""; say("", true);
+    chatPoll();
+  } catch (e) { console.error(e); say("⚠️ Could not send. Did you run the chat SQL? (" + e.message + ")"); }
+}
+
+async function deleteChat(id) {
+  if (currentUser !== "President" || !confirm("Delete this message?")) return;
+  try { await sb("chat_messages?id=eq." + Number(id), { method: "DELETE" }); } catch (e) { console.error(e); }
+  chatSig = ""; chatPoll();
+}
+
+async function chatPoll() {
+  if (chatBusy || !currentUser || !accounts[currentUser]) return;
+  chatBusy = true;
+  try {
+    // badge + list of my private conversations
+    const r = await sb("chat_messages?select=id,channel,sender&order=id.desc&limit=150");
+    if (r.ok) {
+      const rows = await r.json(), max = {};
+      chatDMs = [...new Set(rows.map(x => x.channel).filter(c => c.startsWith("dm:") && chatVisible(c)))];
+      let n = 0;
+      rows.forEach(x => {
+        if (!chatVisible(x.channel)) return;
+        max[x.channel] = Math.max(max[x.channel] || 0, x.id);
+        if (x.sender !== currentUser && x.id > (chatSeen[x.channel] || 0) && !chatInit) { /* first pass sets baseline */ }
+        else if (x.sender !== currentUser && x.id > (chatSeen[x.channel] || 0) && !(chatActive() && chatCh === x.channel)) n++;
+      });
+      if (!chatInit) { for (const c in max) if (chatSeen[c] === undefined) chatSeen[c] = max[c]; chatInit = true; }
+      const b = document.getElementById("chatBadge");
+      if (b) { b.textContent = n; b.style.display = n ? "inline" : "none"; }
+    }
+
+    // messages of the open channel
+    if (chatActive()) {
+      const q = chatCh === "all"
+        ? "chat_messages?select=*&order=id.desc&limit=200"
+        : "chat_messages?select=*&channel=eq." + encodeURIComponent(chatCh) + "&order=id.desc&limit=60";
+      if (chatCh === "all" && currentUser !== "President") chatCh = "global";
+      const r2 = await sb(q);
+      if (r2.ok) {
+        chatMsgs = (await r2.json()).reverse();
+        if (chatMsgs.length && chatCh !== "all") {
+          chatSeen[chatCh] = chatMsgs[chatMsgs.length - 1].id;
+          localStorage.setItem("smfaChatSeen", JSON.stringify(chatSeen));
+        }
+        renderChat();
+      }
+      chatSelects();
+    }
+  } catch (e) { console.warn("Chat:", e); }
+  chatBusy = false;
+}
+
+setInterval(chatPoll, 3000);
+
+/* ---------- Hook into the rest of the site ---------- */
+
+const _openPanelV24 = openPanel;
+openPanel = async function (name) {
+  await _openPanelV24(name);
+  if (name === "chat") { chatSelects(); chatPoll(); }
+};
+
+// "Contact Command" now opens a private chat with the President
+(function wireContactCommand() {
+  document.querySelectorAll("#command button").forEach(b => {
+    if ((b.getAttribute("onclick") || "").includes("Command communication")) {
+      b.onclick = () => currentUser === "President" ? openPanel("chat") : openChatDM("President");
+    }
+  });
+})();
+
+UPDATE_LOG.unshift({
+  v: "v24", title: "Chat", items: [
+    "New 💬 CHAT tab with Global chat, a read-only Announcements channel (President posts), and a channel for your main team.",
+    "Message any player privately. Contact Command now opens a private chat with the President.",
+    "You can't send the same message twice in a row, there is a short gap between messages, and messages are limited to 200 characters.",
+    "Unread messages show as a red badge on the Chat tab." 
+  ]
+});
 
 /* ==================================================
    START
