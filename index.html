@@ -6256,8 +6256,8 @@ UPDATE_LOG.unshift({
   ]
 });/* ===== SMFA PATCH v20: RANK-BASED MATERIAL PRICES + PRESIDENT HOURLY LIMIT ===== */
 
-const MAT_BASE = 50;          // price per material at Recruit
-const PRICE_GROWTH = 2;       // price multiplier for each rank step (change this to tune)
+const MAT_BASE = 10;          // price per material at Recruit
+const PRICE_GROWTH = 1.53;    // matches how fast salaries grow, so a payday buys ~50 materials
 const PRES_LIMIT = 1000;      // President's max materials bought per hour
 const PRES_WINDOW = 3600000;  // 1 hour
 
@@ -8297,6 +8297,36 @@ UPDATE_LOG.unshift({
     "Receiving money from the President plays a gold MONEY RECEIVED! animation with a count-up of the amount.",
     "If several notices arrive at once, they play one after another.",
     "The President can preview all three animations from the Command Center."
+  ]
+});
+    /* ===== SMFA PATCH v29: FAIRER MATERIAL PRICES ===== */
+
+/* Organize Supplies now costs about 4 materials' worth at YOUR rank price (you still get 5, or 7 for Assistant) */
+function syncSupplyCost() {
+  if (!currentUser || !accounts[currentUser]) return;
+  ACT.supplies.cost = Math.max(10, matPrice(currentUser) * 4);
+}
+
+const _runActionV29 = runAction;
+runAction = function (k) {
+  if (k === "supplies") syncSupplyCost();
+  _runActionV29(k);
+};
+
+setInterval(syncSupplyCost, 1000);
+
+(function fixV20Log() {
+  const e = UPDATE_LOG.find(x => x.v === "v20");
+  if (e) e.items = e.items.map(t => t.startsWith("Material prices now depend")
+    ? "Material prices depend on your rank and scale with your payday." : t);
+})();
+
+UPDATE_LOG.unshift({
+  v: "v29", title: "Fairer material prices", items: [
+    "Material prices are now about 1/50 of your payday, so every rank can afford roughly 50 materials per payday. Recruit pays about 10 SD, Senior Sergeant about 196 SD and the President about 49,000 SD.",
+    "Before, prices doubled with every rank and quickly became impossible to afford (Senior Sergeant paid 6,400 SD each).",
+    "Organize Supplies now costs about 4 materials' worth at your rank price instead of a flat 800 SD.",
+    "The 25% team discount and the President's 1,000-per-hour limit are unchanged."
   ]
 });
 /* ==================================================
