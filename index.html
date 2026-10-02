@@ -6082,18 +6082,7 @@ UPDATE_LOG.unshift({
         "The rank ladder is back in the Command Center, showing salaries and your current rank."
     ]
 });
-/* ==================================================
-   START
-================================================== */
-
-renderStocks();
-
-setInterval(
-    updateMarket,
-    1000
-);
-
-    /* ===== SMFA PATCH v19: HARDER WAR (nation HP, resistances, supplies, retaliation) ===== */
+        /* ===== SMFA PATCH v19: HARDER WAR (nation HP, resistances, supplies, retaliation) ===== */
 
 const HP_MAX = { Easy: 8000, Medium: 60000, Hard: 400000, Expert: 3000000, Challenge: 30000000 };
 const RAID   = { Easy: .05, Medium: .10, Hard: .18, Expert: .28, Challenge: .40 };
@@ -6265,7 +6254,94 @@ UPDATE_LOG.unshift({
     "A nation must be destroyed (HP to 0) to be conquered. Conquered nations rebuild to full HP.",
     "New BUILD 100, BUILD 1000, and +100 Fuel/Ammo buttons on the War page."
   ]
+});/* ===== SMFA PATCH v20: RANK-BASED MATERIAL PRICES + PRESIDENT HOURLY LIMIT ===== */
+
+const MAT_BASE = 50;          // price per material at Recruit
+const PRICE_GROWTH = 2;       // price multiplier for each rank step (change this to tune)
+const PRES_LIMIT = 1000;      // President's max materials bought per hour
+const PRES_WINDOW = 3600000;  // 1 hour
+
+const matPrice = u =>
+  Math.round(MAT_BASE * Math.pow(PRICE_GROWTH, Math.max(0, ranks.indexOf(accounts[u].rank))));
+
+function presUsed() {
+  const pb = (war.world && war.world.presBuy) || { t: 0, n: 0 };
+  return Date.now() - pb.t >= PRES_WINDOW ? { n: 0, left: 0 }
+       : { n: pb.n, left: pb.t + PRES_WINDOW - Date.now() };
+}
+
+buyMat = async function (team, m, q) {
+  if (!myTeams().length) return alert("Join a main or supporting team first.");
+
+  if (currentUser === "President") {
+    await loadWar();
+    const u = presUsed();
+    if (u.n + q > PRES_LIMIT) {
+      return alert("Hourly limit reached. You can buy " + fmtN(Math.max(0, PRES_LIMIT - u.n)) +
+        " more materials. The limit resets in " + fmtTime(u.left) + ".");
+    }
+  }
+
+  const price = Math.round(matPrice(currentUser) * (myTeams().includes(team) ? 0.75 : 1));
+  if (!actSpend(price * q)) return;
+
+  await wmod("team:" + team, d => { d.mat[m] = (d.mat[m] || 0) + q; return d; });
+
+  if (currentUser === "President") {
+    await wmod("world", w => {
+      const pb = w.presBuy;
+      if (!pb || Date.now() - pb.t >= PRES_WINDOW) w.presBuy = { t: Date.now(), n: q };
+      else pb.n += q;
+      return w;
+    });
+  }
+  renderWar();
+};
+
+const _renderWarV20 = renderWar;
+renderWar = function () {
+  _renderWarV20();
+  const body = document.getElementById("warBody");
+  if (!body || !currentUser || !accounts[currentUser]) return;
+
+  const h = Array.from(body.querySelectorAll("h3")).find(x => x.textContent.includes("Supply this team"));
+  const p = h && h.nextElementSibling;
+  if (!p) return;
+
+  const team = document.getElementById("warTeam").value;
+  const own = myTeams().includes(team);
+  const price = Math.round(matPrice(currentUser) * (own ? 0.75 : 1));
+
+  let txt = "Your price: " + fmtN(price) + " SD per material (" + accounts[currentUser].rank +
+            ": base " + fmtN(matPrice(currentUser)) + " SD" + (own ? ", -25% team discount" : "") + ").";
+  if (currentUser === "President") {
+    const u = presUsed();
+    txt += " Hourly limit: " + fmtN(PRES_LIMIT - u.n) + " / " + fmtN(PRES_LIMIT) + " left" +
+           (u.n ? " (resets in " + fmtTime(u.left) + ")" : "") + ".";
+  }
+  p.textContent = txt;
+};
+
+UPDATE_LOG.unshift({
+  v: "v20", title: "Rank-based material prices", items: [
+    "Material prices now depend on your rank. Recruit pays 50 SD per material and the price doubles with every rank-up.",
+    "The team discount (25% off for your own teams) still applies on top.",
+    "The President can buy at most 1,000 materials per hour. The limit resets one hour after the first purchase and is shared across devices.",
+    "The War page shows your own price and, for the President, the remaining hourly limit."
+  ]
 });
+
+/* ==================================================
+   START
+================================================== */
+
+renderStocks();
+
+setInterval(
+    updateMarket,
+    1000
+);
+
 
 /* ==================================================
    SAVE BEFORE LEAVING
