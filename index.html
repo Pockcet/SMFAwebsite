@@ -7740,6 +7740,276 @@ UPDATE_LOG.unshift({
     "Betrayal never touches ranks, levels or accounts. It only affects the team's shared stock and your own money."
   ]
 });
+    /* ===== SMFA PATCH v28: PRESIDENT POWERS (activity, demote, research, fine) ===== */
+
+const RESEARCH_COST = 250000, RESEARCH_MS = 20 * 60000;
+let pfDraft = { rank: "", dreason: "", amount: "", freason: "" }, pfMsg = "", pfRes = {}, pfNot = {}, ntBusy = false;
+const unfocus = () => { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); };
+
+/* ---------- Recent activity: stored 10 deep, everyone but the President sees 5 ---------- */
+
+logAct = function (text) {
+  if (!currentUser) return;
+  const d = document.createElement("div");
+  d.innerHTML = text;
+  acts.unshift({ t: Date.now(), x: (d.textContent || "").slice(0, 140) });
+  acts = acts.slice(0, 10);
+  localStorage.setItem("smfaActs_" + currentUser, JSON.stringify(acts));
+  beat();
+};
+
+const _betrayV28 = betray;
+betray = async function (kind) {
+  const t0 = Date.now();
+  await _betrayV28(kind);
+  const e = (bet.log || [])[0];
+  if (e && e.u === currentUser && e.t >= t0) logAct("🗡️ Betrayed the " + e.team + " team: " + e.res + (e.caught ? " (caught!)" : ""));
+};
+
+const _buyV28 = buy;
+buy = function (t) { const m0 = money; _buyV28(t); if (money < m0) logAct("📈 Bought 1 " + t + " share"); };
+const _sellV28 = sell;
+sell = function (t) { const m0 = money; _sellV28(t); if (money > m0) logAct("📉 Sold 1 " + t + " share"); };
+const _payToastV28 = payToast;
+payToast = function (h) { _payToastV28(h); if (/PAYDAY/.test(h)) logAct(h); };
+
+/* ---------- Notices (fines and demotions reach the player through war_state) ---------- */
+
+async function sendNotice(user, n) {
+  const key = "notices:" + user;
+  let list = [];
+  const r0 = await sb("war_state?key=eq." + encodeURIComponent(key) + "&select=data");
+  if (r0.ok) { const rows = await r0.json(); if (rows[0] && rows[0].data) list = rows[0].data.list || []; }
+  list.unshift(Object.assign({ id: Date.now() + "-" + Math.floor(Math.random() * 1000), t: Date.now() }, n));
+  const r = await sb("war_state", { method: "POST", headers: UPSERT,
+    body: JSON.stringify([{ key, data: { list: list.slice(0, 30) }, updated_at: new Date().toISOString() }]) });
+  if (!r.ok) throw new Error(r.status + ": " + await r.text());
+}
+
+async function pollNotices() {
+  if (ntBusy || !expReady()) return;
+  ntBusy = true;
+  try {
+    const r = await sb("war_state?key=eq." + encodeURIComponent("notices:" + currentUser) + "&select=data");
+    if (!r.ok) return;
+    const rows = await r.json();
+    const list = (rows[0] && rows[0].data && rows[0].data.list) || [];
+    const x = xs();
+    if (!x.n) x.n = [];
+    const fresh = list.filter(n => !x.n.includes(n.id)).reverse();
+
+    for (const n of fresh) {
+      x.n.push(n.id);
+      if (n.type === "fine") {
+        const pay = Math.min(Math.max(0, money), Number(n.amount) || 0);
+        money -= pay;
+        payToast("⚖️ <b>You were fined " + fmtN(pay) + " SD</b><br><span style='color:#aaa;font-size:13px;'>Reason: " + escapeHTML(n.reason) + "</span>");
+        logAct("⚖️ Fined " + fmtN(pay) + " SD. Reason: " + n.reason);
+      } else if (n.type === "demote") {
+        const i = ranks.indexOf(n.rank);
+        if (i >= 0) { x.e = cumFor(i); x.rq = -1; }
+        payToast("⬇️ <b>You were demoted to " + escapeHTML(n.rank) + "</b><br><span style='color:#aaa;font-size:13px;'>Reason: " + escapeHTML(n.reason) + "</span>");
+        logAct("⬇️ Demoted to " + n.rank + ". Reason: " + n.reason);
+      }
+    }
+    if (fresh.length) {
+      x.n = x.n.slice(-60);
+      saveGame(); pushWallet();
+      const b = document.getElementById("balance");
+      if (b) b.textContent = formatMoney(money);
+      updateCommandCenter();
+    }
+  } catch (e) { console.warn("Notices:", e); }
+  finally { ntBusy = false; }
+}
+setInterval(pollNotices, 8000);
+
+/* ---------- President actions ---------- */
+
+async function pfLoadNotices(u) {
+  try {
+    const r = await sb("war_state?key=eq." + encodeURIComponent("notices:" + u) + "&select=data");
+    if (r.ok) { const rows = await r.json(); pfNot[u] = (rows[0] && rows[0].data && rows[0].data.list) || []; }
+  } catch (e) { /* ignore */ }
+  renderPortfolio();
+}
+
+async function researchPlayer(u) {
+  if (currentUser !== "President" || u === "President") return;
+  unfocus();
+  if (money < RESEARCH_COST) { pfMsg = "❌ Not enough Smiley Dollars (needs " + fmtN(RESEARCH_COST) + ")."; return renderPortfolio(); }
+  if (!confirm("Research " + dn(u) + " for " + fmtN(RESEARCH_COST) + " SD?")) return;
+  if (!actSpend(RESEARCH_COST)) return;
+  await loadBet();
+  pfRes[u] = { t: Date.now(), hits: (bet.log || []).filter(e => e.u === u && Date.now() - e.t <= RESEARCH_MS) };
+  pfMsg = "";
+  logAct("🔍 Researched " + dn(u));
+  renderPortfolio();
+}
+
+async function demotePlayer(u) {
+  if (currentUser !== "President" || u === "President") return;
+  unfocus();
+  const reason = pfDraft.dreason.trim().replace(/\s+/g, " ") || "No reason given";
+  try {
+    await loadAccounts();
+    const a = accounts[u];
+    if (!a) throw new Error("Player not found.");
+    const cur = ranks.indexOf(a.rank), tgt = ranks.indexOf(pfDraft.rank);
+    if (tgt < 0) throw new Error("Choose a rank first.");
+    if (tgt >= cur) throw new Error("Pick a rank lower than " + a.rank + ".");
+    if (!confirm("Demote " + dn(u) + " from " + a.rank + " to " + ranks[tgt] + "?")) return;
+
+    const r = await sb("accounts?username=eq." + encodeURIComponent(u), {
+      method: "PATCH", headers: { "Prefer": "return=representation" }, body: JSON.stringify({ rank: ranks[tgt] })
+    });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    if ((await r.json()).length === 0) throw new Error("Account not found online.");
+
+    const old = a.rank;
+    a.rank = ranks[tgt];
+    localStorage.setItem("smfaAccounts", JSON.stringify(accounts));
+    await sendNotice(u, { type: "demote", rank: ranks[tgt], from: old, reason, by: "President" });
+    pfDraft.rank = ""; pfDraft.dreason = "";
+    pfMsg = "✅ " + dn(u) + " was demoted from " + old + " to " + ranks[tgt] + ".";
+    renderTeam(); updateCommandCenter();
+    await pfLoadNotices(u);
+  } catch (e) { pfMsg = "⚠️ " + e.message; renderPortfolio(); }
+}
+
+async function finePlayer(u) {
+  if (currentUser !== "President" || u === "President") return;
+  unfocus();
+  const amt = Math.floor(+pfDraft.amount), reason = pfDraft.freason.trim().replace(/\s+/g, " ");
+  try {
+    if (!(amt >= 1 && amt <= 1e9)) throw new Error("Enter a fine between 1 and 1,000,000,000 SD.");
+    if (reason.length < 3) throw new Error("A fine needs a reason (at least 3 characters).");
+    if (!confirm("Fine " + dn(u) + " " + fmtN(amt) + " SD?\nReason: " + reason)) return;
+    await sendNotice(u, { type: "fine", amount: amt, reason, by: "President" });
+    pfDraft.amount = ""; pfDraft.freason = "";
+    pfMsg = "✅ Fine of " + fmtN(amt) + " SD issued to " + dn(u) + ". It is taken the next time they have the game open.";
+    await pfLoadNotices(u);
+  } catch (e) { pfMsg = "⚠️ " + e.message; renderPortfolio(); }
+}
+
+function pfTools(u) {
+  const a = accounts[u], cur = ranks.indexOf(a.rank), res = pfRes[u], notes = pfNot[u] || [];
+  const opts = ranks.slice(0, cur).map((r, i) =>
+    `<option value="${escapeHTML(r)}"${pfDraft.rank === r ? " selected" : ""}>Lv ${i + 1} · ${escapeHTML(r)}</option>`).join("");
+
+  let h = "<h3>🛡️ President Actions</h3>" + (pfMsg ? `<p>${escapeHTML(pfMsg)}</p>` : "");
+
+  h += `<div class="member"><b>🔍 Research</b><br><span class="rank-description">Digs up any betrayal by this player in the last 20 minutes, even if it was covered up. Costs ${fmtN(RESEARCH_COST)} SD.</span><br>
+    <button class="command-button" style="margin-top:8px;" onclick="researchPlayer('${u}')">RESEARCH · ${fmtN(RESEARCH_COST)} SD</button>`;
+  if (res) {
+    h += `<p><b>Result (${escapeHTML(ago(Date.now() - res.t))}):</b></p>` + (res.hits.length
+      ? res.hits.map(e => `<div style="margin:6px 0;">🕵️ ${escapeHTML(ago(Date.now() - e.t))} — ${escapeHTML(BT[e.k].label)} (${escapeHTML(e.team)}): ${escapeHTML(e.res)}` +
+          `${e.caught ? " · 🚨 caught, fined " + fmtN(e.fine) + " SD" : " · 🕶️ not caught"}</div>`).join("")
+      : "<p>🕵️ No betrayal found in the last 20 minutes.</p>");
+  }
+  h += "</div>";
+
+  h += `<div class="member"><b>⬇️ Demote</b><br>` + (cur > 0
+    ? `<select class="promo-select" style="margin-top:6px;" onchange="pfDraft.rank=this.value"><option value="">— choose rank —</option>${opts}</select>
+       <input class="account-input" maxlength="120" placeholder="Reason (optional)" value="${escapeHTML(pfDraft.dreason)}" oninput="pfDraft.dreason=this.value">
+       <button class="command-button" onclick="demotePlayer('${u}')">DEMOTE</button>
+       <p class="rank-description">Their EXP resets to the start of the new level.</p>`
+    : '<span class="rank-description">Already at the lowest rank.</span>') + "</div>";
+
+  h += `<div class="member"><b>💸 Fine</b><br>
+    <input type="number" min="1" class="account-input" placeholder="Amount (SD)" value="${escapeHTML(pfDraft.amount)}" oninput="pfDraft.amount=this.value">
+    <input class="account-input" maxlength="120" placeholder="Reason (required)" value="${escapeHTML(pfDraft.freason)}" oninput="pfDraft.freason=this.value">
+    <button class="command-button" onclick="finePlayer('${u}')">ISSUE FINE</button></div>`;
+
+  h += '<div class="member"><b>📋 Records</b><br>' + (notes.length ? notes.map(n =>
+    `<span style="color:#888;">${escapeHTML(new Date(n.t).toLocaleString())}</span> — ` +
+    (n.type === "fine" ? `💸 Fined ${fmtN(n.amount)} SD` : `⬇️ Demoted from ${escapeHTML(n.from || "?")} to ${escapeHTML(n.rank)}`) +
+    `: ${escapeHTML(n.reason)}`).join("<br>") : '<span class="rank-description">No fines or demotions on record.</span>') + "</div>";
+  return h;
+}
+
+/* ---------- Portfolio: 5 entries for everyone, 10 with exact times for the President ---------- */
+
+const _renderPortfolioV28 = renderPortfolio;
+renderPortfolio = function () {
+  const body = document.getElementById("pfBody"), ae = document.activeElement;
+  if (pfSel && body && ae && body.contains(ae) && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return;
+  _renderPortfolioV28();
+  if (!body || !pfSel || !accounts[pfSel]) return;
+
+  const h = Array.from(body.querySelectorAll("h3")).find(x => x.textContent.includes("Recent Activity"));
+  if (!h) return;
+  while (h.nextSibling) h.nextSibling.remove();
+
+  const u = pfSel, me = u === currentUser, pres = currentUser === "President";
+  const feed = (me ? acts : ((pf.pres[u] || {}).a || [])).slice(0, pres ? 10 : 5);
+  h.insertAdjacentHTML("afterend",
+    `<p class="rank-description">${pres ? "Admin view: the last 10 actions, with exact times." : "Shows the last 5 actions. Newer activity covers older activity."}</p>` +
+    (feed.length ? feed.map(e => `<div class="member" style="margin:6px 0;"><span style="color:#888;">${escapeHTML(pres ? new Date(e.t).toLocaleString() : ago(Date.now() - e.t))}</span> — ${escapeHTML(e.x)}</div>`).join("")
+                 : '<p class="rank-description">No activity recorded yet.</p>') +
+    (pres && !me ? pfTools(u) : ""));
+};
+
+const _pfOpenV28 = pfOpen;
+pfOpen = function (u) {
+  pfDraft = { rank: "", dreason: "", amount: "", freason: "" }; pfMsg = "";
+  _pfOpenV28(u);
+  if (currentUser === "President" && u !== "President") pfLoadNotices(u);
+};
+
+const _pfLoadV28 = pfLoad;
+pfLoad = async function () {
+  await _pfLoadV28();
+  if (currentUser === "President" && pfSel && pfSel !== "President") await pfLoadNotices(pfSel);
+};
+
+/* ---------- Betrayal list: the President only sees caught ones; hidden ones need research ---------- */
+
+const _renderBetrayV28 = renderBetray;
+renderBetray = function (force) {
+  _renderBetrayV28(force);
+  const box = document.getElementById("btBox");
+  if (!box) return;
+  if (currentUser === "President") {
+    box.querySelectorAll(".member").forEach(el => { if (el.textContent.includes("Not caught")) el.remove(); });
+    const d = box.querySelector(".rank-description");
+    if (d) d.innerHTML = "🕵️ Caught betrayals are listed here. To find hidden ones, research a suspect in their Portfolio profile (costs money, covers the last 20 minutes).";
+    if (!box.querySelector(".member") && !box.querySelector("#btNone")) {
+      box.insertAdjacentHTML("beforeend", '<p id="btNone" class="rank-description">No caught betrayals yet.</p>');
+    }
+  } else if (box.innerHTML.includes("Every attempt is logged, and the President can see all of them, caught or not.")) {
+    box.innerHTML = box.innerHTML.replace("Every attempt is logged, and the President can see all of them, caught or not.",
+      "Every attempt is recorded and shows in your Recent Activity until newer activity covers it. The President can research suspects (last 20 minutes).");
+  }
+};
+
+/* ---------- Home: chat is live, so remove it from Coming Soon ---------- */
+
+function dropChatComingSoon() {
+  document.querySelectorAll("#home li").forEach(li => { if (li.textContent.includes("Command Centre chat")) li.remove(); });
+}
+dropChatComingSoon();
+const _renderHomeV28 = renderHome;
+renderHome = function () { _renderHomeV28(); dropChatComingSoon(); };
+
+(function fixV27Log() {
+  const e = UPDATE_LOG.find(x => x.v === "v27");
+  if (e) e.items = e.items.map(t => t.startsWith("Every attempt is logged")
+    ? "Every attempt is recorded. The President can see caught betrayals and pardon traitors." : t);
+})();
+
+UPDATE_LOG.unshift({
+  v: "v28", title: "President powers", items: [
+    "Recent Activity now shows a player's last 5 actions to everyone, and the last 10 with exact times to the President. Payday and stock trades are logged too.",
+    "Betrayals are recorded in Recent Activity where anyone can see them, until newer activity covers them.",
+    "The President can demote players from their Portfolio profile. A demotion resets their EXP to the start of their new level.",
+    "The President can research a player (costs money) to find betrayals from the last 20 minutes, even covered-up ones.",
+    "The President can fine players. A fine needs a reason, and the player is notified when it is taken.",
+    "Fines and demotions are kept in a record on each profile.",
+    "The President's betrayal list now shows caught betrayals only. Hidden ones need research.",
+    "Removed \"Command Centre chat\" from Coming Soon, since chat is live."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
