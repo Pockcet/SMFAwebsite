@@ -8161,6 +8161,144 @@ UPDATE_LOG.unshift({
     "Records on each profile now also list promotions and gifts, with reasons."
   ]
 });
+    /* ===== SMFA PATCH v28.9: FINED / DEMOTED / MONEY ANIMATIONS ===== */
+
+(function addNoticeAnimStyles() {
+  const s = document.createElement("style");
+  s.textContent = `
+  #noticeOverlay{position:fixed;inset:0;z-index:10002;background:rgba(0,0,0,.9);
+    display:flex;align-items:center;justify-content:center;overflow:hidden;animation:promoFade .4s ease}
+  .na-card{position:relative;text-align:center;background:#181818;border:2px solid var(--c);
+    border-radius:18px;padding:32px 28px;max-width:420px;width:90%;
+    box-shadow:0 0 60px var(--c);animation:naPop .7s cubic-bezier(.2,1.6,.4,1)}
+  .na-card.shake{animation:naPop .6s cubic-bezier(.2,1.6,.4,1),naShake .6s .6s}
+  .na-icon{font-size:64px;animation:naBob 1.2s infinite}
+  .na-title{font-size:30px;font-weight:bold;letter-spacing:3px;margin:8px 0;color:var(--c)}
+  .na-big{font-size:28px;font-weight:bold;color:#fff;margin:12px 0}
+  .na-reason{color:#aaa;margin:6px 0 20px;font-style:italic}
+  @keyframes naPop{from{transform:scale(.3);opacity:0}to{transform:scale(1);opacity:1}}
+  @keyframes naShake{0%,100%{transform:translateX(0)}20%{transform:translateX(-12px)}
+    40%{transform:translateX(12px)}60%{transform:translateX(-8px)}80%{transform:translateX(8px)}}
+  @keyframes naBob{50%{transform:translateY(-8px) scale(1.1)}}`;
+  document.head.appendChild(s);
+})();
+
+const NA_THEME = {
+  fine:   { c: "#ff4d4d", i: "⚖️", t: "FINED!",          bits: ["💸", "⚖️", "📉"],          shake: true,  btn: "ACCEPT" },
+  demote: { c: "#ff944d", i: "⬇️", t: "DEMOTED",         bits: ["⬇️", "💢", "📉"],          shake: true,  btn: "ACCEPT" },
+  give:   { c: "#f1c40f", i: "💰", t: "MONEY RECEIVED!", bits: ["💰", "🪙", "💵", "⭐"],   shake: false, btn: "THANKS" }
+};
+let naQ = [], naOn = false, naTimer = null;
+
+function noticeAnim(o) { naQ.push(o); if (!naOn) naNext(); }
+function naNext() {
+  const o = naQ.shift();
+  if (!o) { naOn = false; return; }
+  naOn = true;
+  showNa(o);
+}
+
+function showNa(o) {
+  const T = NA_THEME[o.type];
+  const old = document.getElementById("noticeOverlay");
+  if (old) old.remove();
+  clearInterval(naTimer);
+
+  const ov = document.createElement("div");
+  ov.id = "noticeOverlay";
+  ov.innerHTML =
+    `<div class="na-card${T.shake ? " shake" : ""}" style="--c:${T.c}">
+       <div class="na-icon">${T.i}</div>
+       <div class="na-title">${T.t}</div>
+       <div>${escapeHTML(o.sub)}</div>
+       <div class="na-big" id="naBig">${escapeHTML(o.type === "give" ? "+0 SD" : o.big)}</div>
+       <div class="na-reason">${o.reason ? "“" + escapeHTML(o.reason) + "”" : ""}</div>
+       <button class="login-button" style="background:${T.c}">${T.btn}</button>
+     </div>`;
+
+  for (let i = 0; i < 36; i++) {
+    const b = document.createElement("span");
+    b.className = "promo-bit";
+    b.textContent = T.bits[i % T.bits.length];
+    b.style.left = Math.random() * 100 + "%";
+    b.style.animationDuration = (2.5 + Math.random() * 2.5) + "s";
+    b.style.animationDelay = (Math.random() * 2) + "s";
+    ov.appendChild(b);
+  }
+
+  ov.querySelector("button").onclick = () => { clearInterval(naTimer); ov.remove(); naNext(); };
+  document.body.appendChild(ov);
+
+  if (o.type === "give" && o.amount > 0) {      // count the money up
+    const big = ov.querySelector("#naBig"), t0 = Date.now(), dur = 1400;
+    naTimer = setInterval(() => {
+      const p = Math.min(1, (Date.now() - t0) / dur);
+      big.textContent = "+" + Math.round(o.amount * p).toLocaleString("en-US") + " SD";
+      if (p >= 1) clearInterval(naTimer);
+    }, 40);
+  }
+}
+
+/* The three notices arrive through payToast, so swap their popup for the animation */
+function parseNoticeToast(h) {
+  const d = document.createElement("div");
+  d.innerHTML = h;
+  const b = d.querySelector("b"), s = d.querySelector("span");
+  return { title: b ? b.textContent : "", reason: s ? s.textContent.replace(/^Reason:\s*/, "").trim() : "" };
+}
+
+const _payToastV289 = payToast;
+payToast = function (h) {
+  if (typeof h === "string" && /You were fined|You were demoted|You received/.test(h)) {
+    const p = parseNoticeToast(h);
+    let m;
+    if ((m = p.title.match(/fined ([\d,]+) SD/)))
+      return noticeAnim({ type: "fine", sub: "You were fined", big: "-" + m[1] + " SD", reason: p.reason });
+    if ((m = p.title.match(/demoted to (.+)$/)))
+      return noticeAnim({ type: "demote", sub: "You were demoted to", big: m[1], reason: p.reason });
+    if ((m = p.title.match(/received ([\d,]+) SD/)))
+      return noticeAnim({ type: "give", sub: "You received", amount: Number(m[1].replace(/,/g, "")), reason: p.reason });
+  }
+  _payToastV289(h);
+};
+
+/* ---------- President: preview the animations (nothing is applied) ---------- */
+
+function naPreview(type) {
+  if (type === "fine")   noticeAnim({ type, sub: "You were fined", big: "-25,000 SD", reason: "Preview: late for the briefing" });
+  if (type === "demote") noticeAnim({ type, sub: "You were demoted to", big: "Sergeant", reason: "Preview: ignored orders" });
+  if (type === "give")   noticeAnim({ type, sub: "You received", amount: 500000, reason: "Preview: great work this week" });
+}
+
+(function buildPreviewBox() {
+  const a = document.getElementById("usernameBox");
+  if (!a || document.getElementById("animPreviewBox")) return;
+  const b = document.createElement("div");
+  b.className = "account-section"; b.id = "animPreviewBox"; b.style.display = "none";
+  b.innerHTML = '<h3>🎬 Preview Animations</h3>' +
+    '<p class="rank-description">Only you see these previews. Nothing is applied to anyone.</p>' +
+    `<button class="command-button" onclick="naPreview('fine')">⚖️ FINED</button>` +
+    `<button class="command-button" onclick="naPreview('demote')">⬇️ DEMOTED</button>` +
+    `<button class="command-button" onclick="naPreview('give')">💰 MONEY</button>`;
+  a.parentNode.insertBefore(b, a);
+})();
+
+const _updateCommandCenterV289 = updateCommandCenter;
+updateCommandCenter = function () {
+  _updateCommandCenterV289();
+  const b = document.getElementById("animPreviewBox");
+  if (b) b.style.display = currentUser === "President" ? "block" : "none";
+};
+
+UPDATE_LOG.unshift({
+  v: "v28.9", title: "Fined, demoted & money animations", items: [
+    "Being fined now plays a full-screen red FINED! animation showing the amount and the reason.",
+    "Being demoted plays a DEMOTED animation showing your new rank and the reason.",
+    "Receiving money from the President plays a gold MONEY RECEIVED! animation with a count-up of the amount.",
+    "If several notices arrive at once, they play one after another.",
+    "The President can preview all three animations from the Command Center."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
