@@ -7090,7 +7090,216 @@ UPDATE_LOG.unshift({
     "Unread messages show as a red badge on the Chat tab." 
   ]
 });
+    /* ===== SMFA PATCH v25: EXP & LEVELS ===== */
 
+const EXP_BASE = 100, EXP_GROWTH = 1.35;
+const EXP_PAY = 20, EXP_ACT = { recon: 15, supplies: 10 };
+const EXP_BATTLE = { Easy: 100, Medium: 250, Hard: 600, Expert: 1500, Challenge: 4000 };
+const EXP_CHAT_CAP = 20;
+
+const needFor = i => Math.round(EXP_BASE * Math.pow(EXP_GROWTH, i));
+const cumFor = i => { let s = 0; for (let k = 0; k < i; k++) s += needFor(k); return s; };
+const lvOf = r => ranks.indexOf(r) + 1;
+const topIdx = () => ranks.indexOf("Senior Commander");
+
+/* EXP lives inside the wallet (portfolio._x), so it syncs across devices with no new tables */
+const expReady = () => !!currentUser && !!accounts[currentUser] && walletReady && walletUser === currentUser;
+function xs() {
+  if (!portfolio._x) portfolio._x = { e: 0, ct: 0, cw: 0, rq: -1, seen: {} };
+  return portfolio._x;
+}
+const xp = () => xs().e || 0;
+
+let popN = 0, popT = null, xpPaySeen = 0;
+
+function expPop(n) {
+  let el = document.getElementById("expPop");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "expPop";
+    el.style.cssText = "position:fixed;right:15px;bottom:60px;z-index:10001;background:#12251d;" +
+      "border:1px solid #00ff88;color:#00ff88;border-radius:8px;padding:6px 12px;font-weight:bold;transition:opacity .4s;";
+    document.body.appendChild(el);
+  }
+  popN += n;
+  el.textContent = "+" + fmtN(popN) + " EXP";
+  el.style.opacity = 1;
+  clearTimeout(popT);
+  popT = setTimeout(() => { el.style.opacity = 0; popN = 0; }, 2000);
+}
+
+function addExp(n) {
+  if (!expReady() || !(n > 0)) return;
+  xs().e = xp() + Math.round(n);
+  saveWallet();
+  expPop(Math.round(n));
+  expCheckReady();
+  renderExp();
+}
+
+/* ---------- Enough EXP? Send the President a promotion request automatically ---------- */
+
+async function expCheckReady() {
+  if (!expReady() || currentUser === "President") return;
+  const i = ranks.indexOf(accounts[currentUser].rank), x = xs();
+  if (i < 0 || i >= topIdx() || xp() < cumFor(i + 1) || x.rq === i) return;
+
+  x.rq = i;                       // claim first, so it can only be sent once per level
+  saveWallet();
+  try {
+    const r = await sb("promotion_messages", {
+      method: "POST", headers: { "Prefer": "return=minimal" },
+      body: JSON.stringify({
+        sender: currentUser,
+        message: currentUser + " has enough EXP for Level " + (i + 2) + " (" + ranks[i + 1] + ") and requests a promotion."
+      })
+    });
+    if (!r.ok) throw new Error(r.status);
+    payToast("🎖️ <b>Level up!</b> You have enough EXP for Level " + (i + 2) +
+             ".<br><span style='color:#aaa;font-size:13px;'>A promotion request was sent to the President.</span>");
+  } catch (e) { x.rq = -1; console.warn("EXP request:", e); }
+}
+
+/* ---------- Where EXP comes from ---------- */
+
+function expPayCheck() {
+  if (!expReady()) return;
+  if (!xpPaySeen) { xpPaySeen = lastPay; return; }
+  if (lastPay > xpPaySeen) {
+    const periods = Math.max(1, Math.min(MAX_CATCHUP, Math.round((lastPay - xpPaySeen) / PAY_INTERVAL)));
+    xpPaySeen = lastPay;
+    addExp(EXP_PAY * periods);
+  }
+}
+
+function expWatch() {   // battles fought by my main/supporting team
+  if (!expReady()) return;
+  const x = xs();
+  [...new Set([accounts[currentUser].team, supportTeams[currentUser]])].filter(t => ATK[t]).forEach(t => {
+    const log = (war.teams[t] || {}).log || [];
+    if (!log.length) return;
+    if (x.seen[t] === undefined) { x.seen[t] = log[0]; return; }   // first look: no back-pay
+    if (x.seen[t] === log[0]) return;
+
+    const idx = log.indexOf(x.seen[t]);
+    let gain = 0;
+    (idx < 0 ? log : log.slice(0, idx)).forEach(l => {
+      const m = l.match(/(DESTROYED|HIT) (.+?) \((\w+)\)/);
+      if (m && EXP_BATTLE[m[3]]) gain += m[1] === "DESTROYED" ? EXP_BATTLE[m[3]] : Math.round(EXP_BATTLE[m[3]] / 5);
+    });
+    x.seen[t] = log[0];
+    if (gain) addExp(gain);
+  });
+}
+
+const _runActionV25 = runAction;
+runAction = function (k) {
+  const before = (getAct().cd || {})[k];
+  _runActionV25(k);
+  if (EXP_ACT[k] && (getAct().cd || {})[k] !== before) addExp(EXP_ACT[k]);
+};
+
+const _buyMatV25 = buyMat;
+buyMat = async function (team, m, q) {
+  const m0 = money;
+  await _buyMatV25(team, m, q);
+  if (money < m0) addExp(Math.min(20, Math.ceil(q / 5)));
+};
+
+const _buildUnitsV25 = buildUnits;
+buildUnits = async function (team, k) {
+  const m0 = money;
+  await _buildUnitsV25(team, k);
+  if (money < m0) addExp(Math.min(50, Math.ceil(k / 5)));
+};
+
+const _sendChatV25 = sendChat;
+sendChat = async function () {
+  const before = chatLastSend;
+  await _sendChatV25();
+  if (chatLastSend === before || !expReady()) return;
+  const x = xs();
+  if (Date.now() - x.cw > 3600000) { x.cw = Date.now(); x.ct = 0; }
+  if (x.ct < EXP_CHAT_CAP) { x.ct++; addExp(1); }
+};
+
+/* ---------- Command Center: Level & EXP ---------- */
+
+(function buildExpBox() {
+  const a = document.getElementById("incomeBox") || document.getElementById("teamPickerBox");
+  if (!a || document.getElementById("expBox")) return;
+  const b = document.createElement("div");
+  b.className = "account-section"; b.id = "expBox";
+  a.parentNode.insertBefore(b, a);
+})();
+
+function renderExp() {
+  const box = document.getElementById("expBox");
+  if (!box || !currentUser || !accounts[currentUser]) return;
+  const a = accounts[currentUser], i = ranks.indexOf(a.rank), e = xp();
+
+  let h = "<h3>📊 Level & EXP</h3><p>⭐ Level <b>" + (i + 1) + "</b> — " + escapeHTML(a.rank) +
+          "</p><p>✨ Total EXP: <b>" + fmtN(e) + "</b></p>";
+
+  if (i >= topIdx()) {
+    h += '<p class="rank-description">You are at the highest rank that EXP can reach. The President rank cannot be earned.</p>';
+  } else {
+    const base = cumFor(i), goal = cumFor(i + 1);
+    const pct = Math.max(0, Math.min(100, ((e - base) / (goal - base)) * 100));
+    h += '<div style="height:10px;background:#222;border-radius:5px;"><div style="height:10px;width:' + pct +
+         '%;background:#00ff88;border-radius:5px;"></div></div>' +
+         "<p>Next: Level " + (i + 2) + " (" + escapeHTML(ranks[i + 1]) + ") at <b>" + fmtN(goal) + "</b> EXP" +
+         (e >= goal ? " — ✅ <b>ready</b>, waiting for the President's approval" : " — " + fmtN(goal - e) + " to go") + "</p>";
+  }
+  box.innerHTML = h;
+}
+
+const _updateCommandCenterV25 = updateCommandCenter;
+updateCommandCenter = function () { _updateCommandCenterV25(); renderExp(); };
+
+const _renderRankListV25 = renderRankList;
+renderRankList = function () {
+  _renderRankListV25();
+  document.querySelectorAll("#rankList .rank-item").forEach((el, i) => {
+    el.textContent = "Lv " + (i + 1) + " · " + el.textContent;
+  });
+};
+
+const _renderHomeV25 = renderHome;
+renderHome = function () {
+  _renderHomeV25();
+  const g = document.querySelector("#homeStatus .home-status");
+  if (g && currentUser && accounts[currentUser]) {
+    g.insertAdjacentHTML("beforeend",
+      '<div class="home-stat"><small>⭐ Level</small><b>' + lvOf(accounts[currentUser].rank) + "</b></div>" +
+      '<div class="home-stat"><small>✨ EXP</small><b>' + fmtN(xp()) + "</b></div>");
+  }
+};
+
+/* ---------- Wiring ---------- */
+
+const _applyRemoteWalletV25 = applyRemoteWallet;
+applyRemoteWallet = function (w) { _applyRemoteWalletV25(w); xpPaySeen = lastPay; };   // another device already paid and counted it
+
+const _loginV25 = login;
+login = async function () {
+  xpPaySeen = 0;
+  await _loginV25();
+  if (currentUser) renderExp();
+};
+
+setInterval(function () { expPayCheck(); expWatch(); expCheckReady(); renderExp(); }, 2000);
+
+UPDATE_LOG.unshift({
+  v: "v25", title: "EXP & levels", items: [
+    "Ranks are now levels: Recruit is Level 1 up to President at Level 21. The rank ladder shows each level.",
+    "You earn EXP from paydays, recon, supplies, buying materials, building units, chatting (capped) and battles your team fights.",
+    "Each level needs more EXP than the last. When you have enough, a promotion request is sent to the President automatically.",
+    "The President still chooses the rank. Nobody can reach the President rank through EXP.",
+    "New Level & EXP section in the Command Center with a progress bar, plus Level and EXP on the Home status card.",
+    "EXP is saved with your wallet, so it follows you across devices."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
