@@ -9968,6 +9968,447 @@ renderHome = function () {
   if (e) e.items.push(...items);
   else UPDATE_LOG.unshift({ v: "v30", title: "Release update", items });
 })();
+    /* ===== SMFA PATCH v30 (PART 4): CRIMES, ASSASSINATION, DEAD PRESIDENT ===== */
+
+const ASSASSIN_COST = 50000;     // the bribe for weapons and help (SD)
+const TIER_INFO = {              // display only: the server decides the real odds and rewards
+  minor:   { label: "Minor offences", catchP: 0.20, mult: 2 },
+  serious: { label: "Serious offences", catchP: 0.35, mult: 6 },
+  major:   { label: "Major crimes", catchP: 0.50, mult: 15 },
+  capital: { label: "Capital crimes (lifetime sentence)", catchP: 0.70, mult: 40 }
+};
+const tierOf = m => m === 0 ? "capital" : m <= 90 ? "minor" : m <= 720 ? "serious" : "major";
+const pctTxt = x => Math.round(x * 100) + "%";
+
+let crimes = [], crimeMsg = "", crimeSig = "", crimeCoolUntil = 0;
+let asState = { streak: 0, left: 0, pending: false, success_p: 0.01, caught_p: 0.20, dead: false, at: 0 };
+let presInfo = { dead: false, left: 0, killer: null, killed_at: null, age: null, at: 0 };
+let presSeen = null, presDeadShown = false;
+
+(function addCardStyles() {
+  const s = document.createElement("style");
+  s.textContent = `
+  #bigCard{position:fixed;inset:0;z-index:10004;background:rgba(5,5,5,.94);display:flex;align-items:center;
+    justify-content:center;overflow:hidden;animation:promoFade .5s ease}
+  .bc-card{position:relative;text-align:center;background:#111;border:2px solid var(--c);border-radius:18px;
+    padding:30px 26px;max-width:440px;width:90%;box-shadow:0 0 70px var(--c)}
+  .bc-icon{font-size:66px;animation:naBob 1.6s infinite}
+  .bc-title{font-size:24px;font-weight:bold;letter-spacing:3px;color:var(--c);margin:8px 0 14px}
+  .bc-line{color:#ddd;margin:10px 0;opacity:0;animation:exIn .8s ease forwards}
+  .bc-btn{opacity:0;animation:exIn .8s ease forwards;margin-top:18px;background:var(--c);color:#000}`;
+  document.head.appendChild(s);
+})();
+
+/* A reusable full-screen card: lines fade in one by one */
+function showCard(o) {
+  const old = document.getElementById("bigCard");
+  if (old) old.remove();
+  const ov = document.createElement("div");
+  ov.id = "bigCard";
+  ov.innerHTML = '<div class="bc-card" style="--c:' + o.color + '"><div class="bc-icon">' + o.icon + "</div>" +
+    '<div class="bc-title">' + escapeHTML(o.title) + "</div>" +
+    o.lines.map(l => '<div class="bc-line" style="animation-delay:' + l.d + 's">' + l.html + "</div>").join("") +
+    '<button class="login-button bc-btn" style="animation-delay:' + o.btnDelay + 's">' + escapeHTML(o.btn) + "</button></div>";
+  (o.bits || []).length && Array.from({ length: 30 }).forEach((_, i) => {
+    const b = document.createElement("span");
+    b.className = "promo-bit";
+    b.textContent = o.bits[i % o.bits.length];
+    b.style.left = Math.random() * 100 + "%";
+    b.style.animationDuration = (3 + Math.random() * 3) + "s";
+    b.style.animationDelay = (Math.random() * 3) + "s";
+    ov.appendChild(b);
+  });
+  ov.querySelector("button").onclick = () => { ov.remove(); if (o.onclose) o.onclose(); };
+  document.body.appendChild(ov);
+}
+
+/* ---------- Banner while the President is dead ---------- */
+
+(function buildPresBanner() {
+  const h = document.querySelector("header");
+  if (!h || document.getElementById("presBanner")) return;
+  const b = document.createElement("div");
+  b.id = "presBanner";
+  b.style.cssText = "display:none;background:#2a0a0a;border-bottom:3px solid #ff4d4d;color:#ffb3b3;text-align:center;padding:12px;font-weight:bold;";
+  h.insertAdjacentElement("afterend", b);
+})();
+
+function renderPresBanner() {
+  const b = document.getElementById("presBanner");
+  if (!b) return;
+  const left = presInfo.dead ? presInfo.left * 1000 - (Date.now() - presInfo.at) : 0;
+  if (!currentUser || !presInfo.dead || left <= 0) { b.style.display = "none"; return; }
+  b.style.display = "block";
+  b.innerHTML = "☠️ THE PRESIDENT HAS BEEN ASSASSINATED" + (presInfo.killer ? " by " + escapeHTML(presInfo.killer) : "") +
+    ". The seat is empty. A new president takes office in " + fmtDur(left) + ".";
+}
+
+/* ---------- President status, death and election ---------- */
+
+async function presStatus() {
+  try {
+    const r = await sb("rpc/smfa_president_status", { method: "POST", body: "{}" });
+    return r.ok ? await r.json() : null;
+  } catch (e) { return null; }
+}
+
+function showKillCard(killer) {
+  showCard({ color: "#ff4d4d", icon: "☠️", title: "THE PRESIDENT IS DEAD",
+    lines: [{ html: "<b>" + escapeHTML(killer || "An assassin") + "</b> has assassinated the President!", d: 0.8 },
+            { html: "The seat is empty for 24 hours.", d: 2.2 },
+            { html: "Chaos grips the Smiley Face Army...", d: 3.6 }],
+    bits: ["☠️", "🥀", "🕯️"], btn: "CONTINUE", btnDelay: 5 });
+}
+
+function presDeathScreen() {
+  if (presDeadShown) return;
+  presDeadShown = true;
+  try { if (typeof flushNow === "function") flushNow(); } catch (e) { /* ignore */ }
+  showCard({ color: "#ff4d4d", icon: "☠️", title: "YOU HAVE BEEN ASSASSINATED",
+    lines: [{ html: "An assassin reached you.", d: 0.6 },
+            { html: "Killed by <b>" + escapeHTML(presInfo.killer || "an unknown assassin") + "</b>.", d: 1.8 },
+            { html: "Your account is locked for 24 hours. When you return, a new president will have been elected.", d: 3.2 }],
+    bits: ["☠️", "🥀", "🕯️"], btn: "ACCEPT YOUR FATE", btnDelay: 4.6, onclose: () => location.reload() });
+  walletReady = false; auth = null; currentUser = null;
+}
+
+async function pollPresident() {
+  if (!currentUser || document.hidden) return;
+  const j = await presStatus();
+  if (!j) return;
+  presInfo = { dead: !!j.dead, left: j.left || 0, killer: j.killer || null, killed_at: j.killed_at || null, age: j.age, at: Date.now() };
+
+  if (!j.dead) {
+    presDeadShown = false;
+    if (presSeen === null) presSeen = j.killed_at || "none";
+    renderPresBanner();
+    return;
+  }
+  if (currentUser === "President") { presDeathScreen(); return; }
+
+  const first = presSeen === null;
+  if (presSeen !== j.killed_at) {
+    presSeen = j.killed_at;
+    if (!(first && (j.age || 0) >= 60) && j.killer !== currentUser) showKillCard(j.killer);
+  }
+  renderPresBanner();
+}
+
+async function consumeNewPresident() {
+  if (currentUser !== "President" || !auth) return;
+  try {
+    const r = await sb("rpc/smfa_new_president", { method: "POST", body: JSON.stringify({ p_pw: auth.pw }) });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (j && j.show) showCard({ color: "#f1c40f", icon: "🗳️", title: "A NEW PRESIDENT HAS BEEN ELECTED",
+      lines: [{ html: "While the army mourned, an election was held.", d: 0.8 },
+              { html: "The previous President was killed by <b>" + escapeHTML(j.killer || "an assassin") + "</b>.", d: 2.2 },
+              { html: "Long live the President!", d: 3.6 }],
+      bits: ["🗳️", "🎖️", "⭐", "😀"], btn: "TAKE OFFICE", btnDelay: 5 });
+  } catch (e) { console.warn("New president:", e); }
+}
+
+/* ---------- Login: a dead President cannot log in ---------- */
+
+const _loginV30c = login;
+login = async function () {
+  const u = (document.getElementById("username").value || "").trim();
+  if (u === "President") {
+    const st = await presStatus();
+    if (st && st.dead) {
+      const err = document.getElementById("loginError");
+      err.textContent = "☠️ The President was assassinated. This account is locked for another " + fmtDur((st.left || 0) * 1000) + ".";
+      err.style.display = "block";
+      return;
+    }
+  }
+  await _loginV30c();
+  if (!currentUser) return;
+  presSeen = null;
+  await consumeNewPresident();
+  loadCrimes();
+  pollPresident();
+};
+
+/* ---------- Research can expose a lying-low assassin ---------- */
+
+const _researchPlayerV30c = researchPlayer;
+researchPlayer = async function (u) {
+  const m0 = money;
+  await _researchPlayerV30c(u);
+  if (currentUser !== "President" || !auth || u === "President" || money >= m0) return;   // only when the research was paid for
+  try {
+    const r = await sb("rpc/smfa_investigate", { method: "POST", body: JSON.stringify({ p_pw: auth.pw, p_target: u }) });
+    if (!r.ok) throw new Error(r.status);
+    if ((await r.json()) === "caught") {
+      pfMsg = "🕵️ Your research exposed " + dn(u) + " as an assassin! They were arrested for life.";
+      logAct("🕵️ Exposed " + dn(u) + " as an assassin");
+      await loadJails();
+      renderPortfolio();
+    }
+  } catch (e) { console.warn("Investigate:", e); }
+};
+
+/* ---------- Crime tab ---------- */
+
+(function buildCrimeTab() {
+  const team = document.getElementById("team");
+  if (!team || document.getElementById("crime")) return;
+  const p = document.createElement("div");
+  p.id = "crime"; p.className = "panel";
+  p.innerHTML = '<h2>🗡️ CRIME</h2><div id="crimeBody"></div>';
+  team.parentNode.insertBefore(p, team);
+
+  const nav = document.querySelector(".navigation");
+  if (nav) {
+    const b = document.createElement("button");
+    b.id = "crimeButton"; b.textContent = "🗡️ CRIME"; b.style.display = "none";
+    b.onclick = () => openPanel("crime");
+    nav.insertBefore(b, nav.lastElementChild);
+  }
+})();
+
+async function loadCrimes() {
+  try {
+    const r = await sb("smfa_crimes?select=*&order=id.asc");
+    if (r.ok) crimes = await r.json();
+  } catch (e) { console.warn("Crimes:", e); }
+}
+
+async function loadAssassin() {
+  if (!auth || !currentUser || currentUser === "President") return;
+  try {
+    const r = await sb("rpc/smfa_assassin_status", { method: "POST", body: JSON.stringify({ p_user: currentUser, p_pw: auth.pw }) });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (j && j.ok) asState = { streak: j.streak, left: j.left, pending: j.pending, success_p: j.success_p, caught_p: j.caught_p, dead: j.dead, at: Date.now() };
+  } catch (e) { /* ignore */ }
+}
+
+function renderCrime(force) {
+  const body = document.getElementById("crimeBody"), panel = document.getElementById("crime");
+  if (!body || !panel || !panel.classList.contains("active") || !currentUser || !accounts[currentUser]) return;
+
+  const jailed = jailedNow(currentUser);
+  const sig = JSON.stringify([crimes.length, jailed, asState.streak, asState.left > 0, asState.pending, asState.dead, presInfo.dead, crimeMsg]);
+  if (!force && sig === crimeSig) return;
+  crimeSig = sig;
+
+  const salary = SALARIES[accounts[currentUser].rank] || 0;
+  const coolEnd = crimeCoolUntil, asEnd = asState.at + asState.left * 1000;
+  let h = crimeMsg ? '<div class="info-box"><p>' + escapeHTML(crimeMsg) + "</p></div>" : "";
+
+  h += '<div class="info-box"><h3>⚠️ How crime works</h3><ul class="home-list">' +
+    "<li>Pick a crime. If you get away with it you earn Smiley Dollars based on your own payday: the worse the crime, the bigger the reward.</li>" +
+    "<li>If you're caught you're jailed on the spot for that crime's full sentence and earn nothing meanwhile.</li>" +
+    "<li><b>Capital crimes are lifetime sentences.</b> After 48 hours you'd be executed the next time you log in and your account would be deleted. Only the President can pardon you before then.</li>" +
+    '<li>There is a 10 minute wait between crimes. <span class="rank-description">Next crime: <b class="cTimer" data-end="' + coolEnd + '">' + (coolEnd > Date.now() ? fmtDur(coolEnd - Date.now()) : "ready") + "</b></span></li></ul>" +
+    (jailed ? '<p class="error">⛓️ You are in jail, so you can\'t commit crimes.</p>' : "") + "</div>";
+
+  /* assassination */
+  const dead = asState.dead || presInfo.dead;
+  h += '<div class="info-box"><h3>🗡️ Assassinate the President</h3>' +
+    '<p class="rank-description">Costs <b>' + fmtN(ASSASSIN_COST) + " SD</b> (a bribe for weapons and help, never refunded). " +
+    "Success chance this attempt: <b>" + pctTxt(asState.success_p) + "</b>. If you fail, you're caught <b>" + pctTxt(asState.caught_p) +
+    "</b> of the time: a lifetime sentence. Every failed, unseen attempt in a row raises both chances.</p>" +
+    "<p>Streak: <b>" + asState.streak + "</b> · Next attempt: <b class=\"cTimer\" data-end=\"" + asEnd + '">' +
+    (asEnd > Date.now() ? fmtDur(asEnd - Date.now()) : "ready") + "</b></p>" +
+    (asState.pending && asEnd > Date.now()
+      ? '<p class="error">🕶️ You are lying low. If the President researches you before the timer ends, you will be caught.</p>' : "") +
+    (dead ? '<p class="rank-description">☠️ The President is already dead.</p>' : "") +
+    '<button class="command-button" onclick="attemptAssassination()">🗡️ ATTEMPT ASSASSINATION</button></div>';
+
+  /* ordinary crimes */
+  if (!crimes.length) {
+    h += '<div class="info-box"><p class="rank-description">Loading crimes... If this never goes away, the crime SQL may not have been run.</p></div>';
+  } else {
+    ["minor", "serious", "major", "capital"].forEach(t => {
+      const list = crimes.filter(c => tierOf(c.minutes) === t);
+      if (!list.length) return;
+      const info = TIER_INFO[t];
+      h += '<div class="info-box"><h3>' + info.label + "</h3>" +
+        '<p class="rank-description">Caught: ' + pctTxt(info.catchP) + " · Reward if you get away: about " +
+        fmtN(Math.round(salary * info.mult)) + " SD (" + info.mult + " paydays)</p>" +
+        list.map(c => '<div class="member"><b>' + escapeHTML(c.name) + '</b><br><span class="rank-description">Sentence if caught: ' + fmtLen(c.minutes) +
+          '</span><br><button class="command-button" style="margin-top:8px;" onclick="commitCrime(' + Number(c.id) + ')">🕶️ COMMIT</button></div>').join("") + "</div>";
+    });
+  }
+  body.innerHTML = h;
+}
+
+async function commitCrime(id) {
+  const c = crimes.find(x => Number(x.id) === Number(id));
+  if (!c || !auth || !currentUser || currentUser === "President") return;
+  if (jailedNow(currentUser)) { crimeMsg = "⛓️ Prisoners can't commit crimes."; return renderCrime(true); }
+
+  const t = tierOf(c.minutes);
+  if (t !== "minor") {
+    const warn = t === "capital"
+      ? "CAPITAL CRIME. If you are caught you get a LIFETIME sentence. After 48 hours you will be executed the next time you log in, and your account will be deleted."
+      : "If you are caught you will be jailed for " + fmtLen(c.minutes) + " and earn nothing meanwhile.";
+    if (!confirm(c.name + "\n\n" + warn + "\n\nCatch chance: " + pctTxt(TIER_INFO[t].catchP) + ". Continue?")) return;
+  }
+  try {
+    const r = await sb("rpc/smfa_crime", { method: "POST", body: JSON.stringify({ p_user: currentUser, p_pw: auth.pw, p_crime: c.id }) });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    const out = await r.json();
+    if (!out.ok) {
+      if (out.err === "cooldown") crimeCoolUntil = Date.now() + (out.left || 0) * 1000;
+      const msg = { cooldown: "⏳ Lay low for " + fmtDur((out.left || 0) * 1000) + " before another crime.",
+        jail: "⛓️ Prisoners can't commit crimes.", president: "❌ The President can't commit crimes.",
+        bad: "❌ The server rejected your password.", locked: "⏳ Too many wrong attempts. Try again later.",
+        nocrime: "❌ That crime doesn't exist." };
+      crimeMsg = msg[out.err] || "❌ Could not do that. (" + out.err + ")";
+      return renderCrime(true);
+    }
+    crimeCoolUntil = Date.now() + 600000;
+    if (out.caught) {
+      crimeMsg = "🚨 You were caught for " + out.name + "!";
+      logAct("⛓️ Caught for " + out.name);
+      await loadJails();
+      renderJailBanner(); jailWatch();
+    } else {
+      crimeMsg = "✅ You got away with " + out.name + ". +" + fmtN(out.reward) + " SD is on its way.";
+    }
+  } catch (e) {
+    console.error(e);
+    crimeMsg = "⚠️ Could not do that. Did you run the crime SQL? (" + e.message + ")";
+  }
+  renderCrime(true);
+}
+
+/* ---------- Assassination ---------- */
+
+function playAssassination(out) {
+  const ok = out.result === "success", caught = out.result === "caught";
+  const lines = [
+    { html: "🕶️ You slip into the palace under cover of night...", d: 0.6 },
+    { html: "🗡️ You take aim...", d: 2.2 },
+    { html: "<b>...</b>", d: 3.8 }
+  ];
+  if (ok) {
+    lines.push({ html: '<span style="font-size:22px;font-weight:bold;color:#f1c40f;">☠️ THE PRESIDENT IS DEAD!</span>', d: 5.6 },
+      { html: "💰 Jackpot: <b>+" + fmtN(out.jackpot) + " SD</b> (arriving in a moment)", d: 7 },
+      { html: "The whole army will know your name.", d: 8.2 });
+  } else if (caught) {
+    lines.push({ html: '<span style="font-size:22px;font-weight:bold;color:#ff4d4d;">🚨 THE ATTEMPT FAILED, AND YOU WERE CAUGHT!</span>', d: 5.6 },
+      { html: "Lifetime sentence. After 48 hours you will be executed the next time you log in, unless the President pardons you.", d: 7 });
+  } else {
+    lines.push({ html: '<span style="font-size:22px;font-weight:bold;color:#c0c4c8;">🛡️ THE ATTEMPT FAILED.</span>', d: 5.6 },
+      { html: "You slipped away unseen. Lie low: for the next 24 hours, if the President researches you, you will be caught.", d: 7 },
+      { html: "Next attempt in 24 hours. Next time: success " + pctTxt(out.next_success) + ", caught " + pctTxt(out.next_caught) + ".", d: 8.6 });
+  }
+  showCard({ color: ok ? "#f1c40f" : caught ? "#ff4d4d" : "#9aa0a6", icon: ok ? "☠️" : caught ? "🚨" : "🛡️",
+    title: "ASSASSINATION ATTEMPT", lines,
+    bits: ok ? ["💰", "⭐", "☠️"] : caught ? ["⛓️", "🚨"] : ["🛡️", "💨"], btn: "CONTINUE", btnDelay: ok ? 9.6 : 10.2 });
+}
+
+async function attemptAssassination() {
+  if (!auth || !currentUser || currentUser === "President") return;
+  if (jailedNow(currentUser)) { crimeMsg = "⛓️ Prisoners can't do this."; return renderCrime(true); }
+  await loadAssassin();
+  const left = Math.max(0, asState.left * 1000 - (Date.now() - asState.at));
+  if (left > 0) { crimeMsg = "⏳ You must wait " + fmtDur(left) + " before the next attempt."; return renderCrime(true); }
+  if (asState.dead || presInfo.dead) { crimeMsg = "☠️ The President is already dead."; return renderCrime(true); }
+
+  if (!confirm("ASSASSINATE THE PRESIDENT?\n\nCost: " + fmtN(ASSASSIN_COST) + " SD (never refunded)\nSuccess chance: " + pctTxt(asState.success_p) +
+    "\nIf you fail, you are caught " + pctTxt(asState.caught_p) + " of the time: LIFETIME sentence, executed after 48 hours.\n" +
+    "If you are not caught, you must wait 24 hours, and the President can expose you meanwhile.\n\nContinue?")) return;
+  if (!actSpend(ASSASSIN_COST)) return;
+
+  const refund = () => {
+    money += ASSASSIN_COST; saveGame(); pushWallet();
+    const b = document.getElementById("balance");
+    if (b) b.textContent = formatMoney(money);
+  };
+  let out;
+  try {
+    const r = await sb("rpc/smfa_assassinate", { method: "POST", body: JSON.stringify({ p_user: currentUser, p_pw: auth.pw }) });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    out = await r.json();
+  } catch (e) {
+    refund();
+    console.error(e);
+    crimeMsg = "⚠️ Could not do that. Your money was refunded. (" + e.message + ")";
+    return renderCrime(true);
+  }
+  if (!out.ok) {
+    refund();
+    const msg = { cooldown: "⏳ You must wait " + fmtDur((out.left || 0) * 1000) + " before the next attempt.",
+      alreadydead: "☠️ The President is already dead.", jail: "⛓️ Prisoners can't do this.",
+      president: "❌ The President can't do this.", bad: "❌ The server rejected your password.",
+      locked: "⏳ Too many wrong attempts. Try again later." };
+    crimeMsg = (msg[out.err] || "❌ Could not do that. (" + out.err + ")") + " Your money was refunded.";
+    await loadAssassin();
+    return renderCrime(true);
+  }
+  playAssassination(out);
+  await loadAssassin();
+  if (out.result === "caught") {
+    logAct("⛓️ Caught trying to assassinate the President");
+    await loadJails();
+    renderJailBanner(); jailWatch();
+  }
+  crimeMsg = "";
+  renderCrime(true);
+}
+
+/* ---------- Wiring ---------- */
+
+const _updateCommandCenterV30c = updateCommandCenter;
+updateCommandCenter = function () {
+  _updateCommandCenterV30c();
+  const b = document.getElementById("crimeButton");
+  if (b) b.style.display = currentUser && currentUser !== "President" ? "" : "none";
+};
+
+const _openPanelV30c = openPanel;
+openPanel = async function (name) {
+  if (name === "crime" && (!currentUser || currentUser === "President")) return;
+  await _openPanelV30c(name);
+  if (name === "crime") { await Promise.all([loadCrimes(), loadAssassin()]); renderCrime(true); }
+};
+
+setInterval(pollPresident, 5000);
+
+setInterval(async function () {
+  const p = document.getElementById("crime");
+  if (!currentUser || !p || !p.classList.contains("active") || document.hidden) return;
+  await loadAssassin();
+  renderCrime();
+}, 8000);
+
+setInterval(function () {
+  renderPresBanner();
+  document.querySelectorAll("#crimeBody .cTimer").forEach(el => {
+    const ms = Number(el.dataset.end) - Date.now();
+    el.textContent = ms > 0 ? fmtDur(ms) : "ready";
+  });
+}, 1000);
+
+const _renderHomeV30c = renderHome;
+renderHome = function () {
+  _renderHomeV30c();
+  const home = document.getElementById("home");
+  if (!home || home.dataset.crime) return;
+  const box = Array.from(home.querySelectorAll(".info-box")).find(b => b.querySelector("h3") && b.querySelector("h3").textContent.includes("How It Works"));
+  const ul = box && box.querySelector("ul");
+  if (!ul) return;
+  home.dataset.crime = "1";
+  ul.insertAdjacentHTML("beforeend", "<li>🗡️ <b>Crime:</b> any soldier can commit crimes for Smiley Dollars, but a caught criminal is jailed on the spot, and capital crimes can end in execution. You can even try to assassinate the President, but the odds are very slim and failing is dangerous.</li>");
+};
+
+(function addCrimeLog() {
+  const items = [
+    "New 🗡️ CRIME tab: commit any of 56 crimes in four tiers. Success pays Smiley Dollars based on your payday, and getting caught jails you on the spot for that crime's full sentence. Capital crimes carry a lifetime sentence.",
+    "You can try to assassinate the President for a 50,000 SD bribe. The first attempt has a 1% chance. Each failed attempt in a row raises both your success chance and your chance of being caught, and you must wait 24 hours between attempts.",
+    "While lying low after a failed attempt, the President's Research can expose you and send you away for life.",
+    "If an assassin succeeds, they win a 1,000,000 SD jackpot and are announced to everyone. The President account is locked for 24 hours, and on the next login a new president is announced."
+  ];
+  const e = UPDATE_LOG.find(x => x.v === "v30");
+  if (e) e.items.push(...items);
+  else UPDATE_LOG.unshift({ v: "v30", title: "Release update", items });
+})();
 /* ==================================================
    START
 ================================================== */
