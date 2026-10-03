@@ -8735,6 +8735,167 @@ UPDATE_LOG.unshift({
     "Home and Team text updated: the placeholder divisions are gone and War, Chat, Portfolio, EXP and Betrayal are explained."
   ]
 });
+    /* ===== SMFA PATCH v30 (PART 1): SERVER-SIDE PASSWORDS ===== */
+
+let auth = null;          // { u, pw } of the logged-in player, kept in memory only
+let loginBusy = false;
+
+/* ---------- Scrub old copies of everyone's password from this browser ---------- */
+
+(function stripCachedPasswords() {
+  const set = Storage.prototype.setItem;
+  Storage.prototype.setItem = function (k, v) {
+    if (k === "smfaAccounts") {
+      try {
+        const o = JSON.parse(v);
+        for (const u in o) if (o[u]) o[u].password = "[hidden]";
+        v = JSON.stringify(o);
+      } catch (e) { /* ignore */ }
+    }
+    return set.call(this, k, v);
+  };
+  try {
+    const raw = localStorage.getItem("smfaAccounts");
+    if (raw) localStorage.setItem("smfaAccounts", raw);   // re-save through the scrubber
+  } catch (e) { /* ignore */ }
+})();
+
+/* ---------- Keep YOUR real password in memory so the old password checks still work ---------- */
+
+const _loadAccountsV30 = loadAccounts;
+loadAccounts = async function () {
+  await _loadAccountsV30();
+  if (auth && accounts[auth.u]) accounts[auth.u].password = auth.pw;
+};
+
+/* ---------- Login ---------- */
+
+const _loginV30 = login;
+login = async function () {
+  if (loginBusy) return;
+  const u = document.getElementById("username").value.trim();
+  const pw = document.getElementById("password").value;
+  const err = document.getElementById("loginError");
+  const DEFAULT = "❌ Incorrect username or password.";
+  const note = t => { err.textContent = t; err.style.display = "block"; };
+
+  loginBusy = true;
+  try {
+    let res = "legacy";
+    if (u) {
+      try {
+        const r = await sb("rpc/smfa_login", { method: "POST", body: JSON.stringify({ p_user: u, p_pw: pw }) });
+        if (r.status !== 404) {            // 404 = the SQL has not been run yet
+          if (!r.ok) throw new Error(r.status);
+          res = await r.json();
+        }
+      } catch (e) {
+        console.warn("Login check:", e);
+        return note("⚠️ Could not reach the server. Check your connection.");
+      }
+    }
+    if (res === "locked") return note("⏳ Too many wrong attempts. Try again in 10 minutes.");
+    if (res === "bad") return note(DEFAULT);
+    if (res === "ok") auth = { u, pw };
+    err.textContent = DEFAULT;
+    await _loginV30();
+  } finally { loginBusy = false; }
+};
+
+/* ---------- Create account ---------- */
+
+const _createAccountV30 = createAccount;
+createAccount = async function () {
+  const msg = document.getElementById("newAccMsg");
+  const say = (t, ok) => { msg.textContent = t; msg.className = ok ? "success" : "error"; };
+
+  const username = document.getElementById("newAccUser").value.trim();
+  const pass = document.getElementById("newAccPass").value;
+  const pass2 = document.getElementById("newAccPass2").value;
+
+  if (!/^[A-Za-z0-9_]{3,16}$/.test(username)) return say("❌ Username must be 3–16 letters, numbers or underscores.");
+  if (["__proto__", "constructor", "prototype"].includes(username.toLowerCase())) return say("❌ That username isn't allowed.");
+  if (pass.length < 4) return say("❌ Password must be at least 4 characters.");
+  if (pass !== pass2) return say("❌ Passwords do not match.");
+
+  say("📡 Creating account...", true);
+  try {
+    const r = await sb("rpc/smfa_register", { method: "POST", body: JSON.stringify({ p_user: username, p_pw: pass }) });
+    if (r.status === 404) return _createAccountV30();      // SQL not run yet: old sign-up
+    if (r.status === 409) return say("❌ That username is already taken.");
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    const res = await r.json();
+    if (res === "taken") return say("❌ That username is already taken.");
+    if (res !== "ok") return say("❌ That username or password isn't allowed.");
+
+    say("✅ Account created! Logging you in...", true);
+    document.getElementById("username").value = username;
+    document.getElementById("password").value = pass;
+    document.getElementById("newAccPass").value = "";
+    document.getElementById("newAccPass2").value = "";
+    login();
+  } catch (e) {
+    console.error(e);
+    say("❌ Could not create account. Check your connection.");
+  }
+};
+document.getElementById("newAccSubmit").onclick = createAccount;   // the button kept the old function
+
+/* ---------- Change password ---------- */
+
+const _changePasswordV30 = changePassword;
+changePassword = async function () {
+  if (!currentUser || !auth) return _changePasswordV30();   // old way (before the SQL is run)
+
+  const old = document.getElementById("oldPassword").value;
+  const nw = document.getElementById("newPassword").value;
+  const cf = document.getElementById("confirmPassword").value;
+  const res = document.getElementById("passwordResult");
+  const say = (t, ok) => { res.textContent = t; res.className = ok ? "success" : "error"; };
+
+  if (nw.length < 4) return say("❌ New password must be at least 4 characters.");
+  if (nw !== cf) return say("❌ New passwords do not match.");
+
+  try {
+    const r = await sb("rpc/smfa_change_password",
+      { method: "POST", body: JSON.stringify({ p_user: currentUser, p_old: old, p_new: nw }) });
+    if (r.status === 404) return _changePasswordV30();
+    if (!r.ok) throw new Error(r.status);
+    const out = await r.json();
+    if (out === "locked") return say("⏳ Too many wrong attempts. Try again in 10 minutes.");
+    if (out === "bad") return say("❌ Current password is incorrect.");
+    if (out !== "ok") return say("❌ New password must be at least 4 characters.");
+
+    auth.pw = nw;
+    accounts[currentUser].password = nw;
+    ["oldPassword", "newPassword", "confirmPassword"].forEach(id => { document.getElementById(id).value = ""; });
+    say("✅ Password changed successfully!", true);
+  } catch (e) {
+    console.error(e);
+    say("⚠️ Could not change the password. (" + e.message + ")");
+  }
+};
+
+/* ---------- Renaming keeps working ---------- */
+
+const _changeUsernameV30 = changeUsername;
+changeUsername = async function () {
+  const before = currentUser;
+  await _changeUsernameV30();
+  if (auth && currentUser && currentUser !== before && accounts[currentUser]) {
+    auth.u = currentUser;
+    accounts[currentUser].password = auth.pw;
+  }
+};
+
+UPDATE_LOG.unshift({
+  v: "v30", title: "Release update part 1", items: [
+    "Passwords are now stored as secure hashes on the server. Other players and the database table can no longer see them.",
+    "Logging in, creating an account and changing your password now go through the server.",
+    "After 8 wrong password attempts, an account is locked for 10 minutes.",
+    "Old saved copies of other players' passwords were cleared from this device."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
