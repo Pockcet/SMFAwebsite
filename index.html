@@ -10409,6 +10409,178 @@ renderHome = function () {
   if (e) e.items.push(...items);
   else UPDATE_LOG.unshift({ v: "v30", title: "Release update", items });
 })();
+    /* ===== SMFA PATCH v30.5: SKIP TIME, INVITES, STAND-IN CALL ===== */
+
+let execDraft = null, onlineSet = [], jailExecMsg = "";
+
+async function loadOnline() {
+  try {
+    const r = await sb("war_state?key=like.presence:*&select=key,data");
+    if (!r.ok) return;
+    onlineSet = (await r.json())
+      .filter(x => x.data && Date.now() - (x.data.t || 0) < ONLINE_MS)
+      .map(x => x.key.slice(9));
+  } catch (e) { /* ignore */ }
+}
+
+function execOpen(u) {
+  execDraft = { target: u, who: [], all: false, call: true };
+  jailExecMsg = "";
+  renderJail(true);
+  loadOnline().then(() => { if (execDraft && execDraft.target === u) renderJail(true); });
+}
+function execCancel() { execDraft = null; renderJail(true); }
+function execWho(cb) {
+  if (!execDraft) return;
+  execDraft.who = execDraft.who.filter(x => x !== cb.value);
+  if (cb.checked) execDraft.who.push(cb.value);
+}
+function execAllToggle(cb) {
+  if (!execDraft) return;
+  execDraft.all = cb.checked;
+  document.querySelectorAll("#jailBody .exWho").forEach(i => { i.disabled = cb.checked; });
+}
+function execCall(cb) { if (execDraft) execDraft.call = cb.checked; }
+
+function execPanelHtml(name) {
+  const d = execDraft;
+  const others = Object.keys(accounts).filter(u => u !== "President" && u !== name)
+    .sort((a, b) => (onlineSet.includes(b) - onlineSet.includes(a)) || a.localeCompare(b));
+  return '<div style="margin-top:12px;padding:12px;background:#1a0f0f;border:1px solid #ff4d4d;border-radius:8px;">' +
+    "<b>☠️ Execute " + escapeHTML(name) + ' now</b><br><span class="rank-description">Skips the 48 hours and starts right away, even if they are offline. Their account will be deleted.</span><br><br>' +
+    '<label style="display:block;margin:6px 0;"><input type="checkbox" id="exAll"' + (d.all ? " checked" : "") +
+    ' onchange="execAllToggle(this)"> 📣 Invite everyone online (public execution)</label>' +
+    '<div class="rank-description" style="margin-top:8px;">Or invite specific players (private: only they can watch and share the payout):</div>' +
+    '<div style="max-height:160px;overflow-y:auto;margin:6px 0;">' + (others.length ? others.map(u =>
+      '<label style="display:block;margin:4px 0;"><input type="checkbox" class="exWho" value="' + u + '"' +
+      (d.who.includes(u) ? " checked" : "") + (d.all ? " disabled" : "") + ' onchange="execWho(this)"> ' +
+      (onlineSet.includes(u) ? "🟢 " : "⚪ ") + escapeHTML(dn(u)) + " · " + escapeHTML(accounts[u].rank) + "</label>").join("")
+      : '<span class="rank-description">No other players.</span>') + "</div>" +
+    '<label style="display:block;margin:8px 0;"><input type="checkbox" id="exCall"' + (d.call ? " checked" : "") +
+    ' onchange="execCall(this)"> 🫡 Call the Assistants to stand in (the first one gets the extra share)</label>' +
+    '<button class="command-button" onclick="execGo()">☠️ EXECUTE NOW</button>' +
+    '<button class="command-button" onclick="execCancel()">CANCEL</button></div>';
+}
+
+async function execGo() {
+  if (currentUser !== "President" || !auth || !execDraft) return;
+  const d = execDraft, j = jails[d.target];
+  if (!j || !j.lifetime || j.event_id) {
+    jailExecMsg = "❌ That prisoner can't be executed right now.";
+    execDraft = null;
+    return renderJail(true);
+  }
+  const watching = d.all ? "everyone online" : (d.who.length ? d.who.join(", ") : "nobody (private)");
+  if (!confirm("EXECUTE " + d.target + " NOW?\n\nCrime: " + j.crime +
+    "\nThis skips the 48-hour wait, starts right away and DELETES their account.\nWatching: " + watching +
+    "\nStand-in call to Assistants: " + (d.call ? "yes" : "no") + "\n\nThis cannot be undone. Continue?")) return;
+
+  try {
+    const r = await sb("rpc/smfa_execute_skip", { method: "POST",
+      body: JSON.stringify({ p_pw: auth.pw, p_target: d.target, p_invited: d.all ? null : d.who, p_all: d.all, p_call: d.call }) });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    const out = await r.json();
+    if (!out.ok) {
+      const msg = { notlifetime: "❌ Only lifetime prisoners can be executed.", executing: "❌ That execution has already started.",
+        nouser: "❌ That player no longer exists.", president: "❌ The President can't be executed.",
+        bad: "❌ The server rejected your password.", locked: "⏳ Too many wrong attempts. Try again later.",
+        dead: "☠️ The President account is locked." };
+      jailExecMsg = msg[out.err] || "❌ Could not start it. (" + out.err + ")";
+    } else {
+      jailExecMsg = "☠️ The execution of " + d.target + " has started.";
+      logAct("☠️ Ordered the execution of " + d.target);
+      finalizeLater(out.id, 0);
+    }
+  } catch (e) {
+    console.error(e);
+    jailExecMsg = "⚠️ Could not start it. Did you run the v30.5 SQL? (" + e.message + ")";
+  }
+  execDraft = null;
+  await loadJails();
+  renderJail(true);
+}
+
+/* ---------- Jail tab: the skip-time button and panel for lifetime prisoners ---------- */
+
+const _renderJailV305 = renderJail;
+renderJail = function (force) {
+  _renderJailV305(force);
+  const body = document.getElementById("jailBody"), panel = document.getElementById("jail");
+  if (!body || !panel || !panel.classList.contains("active") || currentUser !== "President") return;
+
+  if (jailExecMsg && !body.querySelector("#execMsg")) {
+    body.insertAdjacentHTML("afterbegin", '<div class="info-box" id="execMsg"><p>' + escapeHTML(jailExecMsg) + "</p></div>");
+  }
+
+  body.querySelectorAll(".member").forEach(el => {
+    if (el.querySelector(".execBtn")) return;
+    const pardon = Array.from(el.querySelectorAll("button")).find(b => /pardonPlayer\('/.test(b.getAttribute("onclick") || ""));
+    if (!pardon) return;
+    const m = (pardon.getAttribute("onclick") || "").match(/pardonPlayer\('(.+?)'\)/);
+    const name = m && m[1], j = name && jails[name];
+    if (!j || !j.lifetime || j.event_id) return;
+
+    pardon.insertAdjacentHTML("afterend", ' <button class="command-button execBtn" style="margin-top:8px;" onclick="execOpen(\'' + name + '\')">⏩ SKIP TIME &amp; EXECUTE</button>');
+    if (execDraft && execDraft.target === name) el.insertAdjacentHTML("beforeend", execPanelHtml(name));
+  });
+};
+
+/* ---------- Execution screen: invite-only, invite line, stand-in call ---------- */
+
+function addStandInButton(ev, card) {
+  const b = document.createElement("button");
+  b.className = "login-button ex-btn";
+  b.style.cssText = "animation-delay:6s;background:#f1c40f;color:#000;";
+  b.textContent = "🫡 STAND IN FOR THE PRESIDENT";
+  b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const r = await sb("rpc/smfa_standin", { method: "POST", body: JSON.stringify({ p_event: ev.id, p_user: currentUser, p_pw: auth.pw }) });
+      const ok = r.ok && (await r.json()) === true;
+      b.textContent = ok ? "✅ You are standing in for the President" : "❌ Someone else already stood in, or the window closed";
+    } catch (e) { b.textContent = "⚠️ Could not stand in"; }
+  };
+  card.appendChild(b);
+}
+
+const _showExecutionV305 = showExecution;
+showExecution = function (ev, condemned) {
+  const d = ev.data || {};
+  const invitedList = Array.isArray(d.invited) ? d.invited : [];
+
+  // invite-only executions are hidden from everyone who wasn't invited
+  if (!condemned && currentUser !== "President" && d.invited && d.invited !== "all") {
+    const invited = invitedList.includes(currentUser);
+    const called = d.callstandin && isAssist(currentUser);
+    if (!invited && !called) return;
+  }
+
+  _showExecutionV305(ev, condemned);
+  if (condemned) return;
+  const card = document.querySelector("#exOverlay .ex-card");
+  if (!card) return;
+
+  if (currentUser !== "President" && d.skipped && (invitedList.includes(currentUser) || d.invited === "all")) {
+    const t = card.querySelector(".ex-title");
+    if (t && !card.querySelector(".ex-invite")) {
+      t.insertAdjacentHTML("afterend", '<div class="ex-line ex-invite" style="animation-delay:.3s">🎟️ The President invited you to watch</div>');
+    }
+  }
+
+  // the earlier patch already adds the stand-in button when the President is offline;
+  // add it here when the President called for a stand-in while online
+  if (d.callstandin && ev.pres !== false && !d.standin && isAssist(currentUser) && !jailedNow(currentUser) && auth) {
+    addStandInButton(ev, card);
+  }
+};
+
+UPDATE_LOG.unshift({
+  v: "v30.5", title: "Skip time, invites and stand-in call", items: [
+    "The President can skip the 48-hour wait on a lifetime prisoner and start the execution right away, even if the prisoner is offline.",
+    "The President can invite specific players to watch (a private execution), or invite everyone online (public). Only invited players can see it and share the payout.",
+    "The President can call the Assistants to stand in. The first Assistant to accept earns the extra share, and the President is still paid."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
