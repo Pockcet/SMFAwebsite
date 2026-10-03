@@ -7740,6 +7740,108 @@ UPDATE_LOG.unshift({
     "Betrayal never touches ranks, levels or accounts. It only affects the team's shared stock and your own money."
   ]
 });
+    /* ===== SMFA PATCH v27.5: BETRAYAL FAILURE CHANCE ===== */
+
+const BT_BASE_FAIL = 0.10, BT_MAX_FAIL = 0.90;
+let btBypass = null;
+
+const btLeft = k => Math.max(0, ((bet.cd[currentUser] || {})[k] || 0) + BT[k].cd - Date.now());
+const failChance = k => BT_BASE_FAIL + (BT_MAX_FAIL - BT_BASE_FAIL) * Math.min(1, btLeft(k) / BT[k].cd);
+
+// lets the original betray() run even while the cooldown is still ticking
+const _loadBetV275 = loadBet;
+loadBet = async function () {
+  await _loadBetV275();
+  if (btBypass && currentUser && bet.cd[currentUser]) delete bet.cd[currentUser][btBypass];
+};
+
+const _betrayV275 = betray;
+betray = async function (kind) {
+  const say = (x, ok) => { const m = document.getElementById("btResult"); if (m) { m.textContent = x; m.className = ok ? "success" : "error"; } };
+  if (!btCan() || !document.getElementById("btTeam")) return _betrayV275(kind);
+
+  const team = document.getElementById("btTeam").value;
+  const nat = document.getElementById("btNation").value;
+  if (!myTeams().includes(team)) return say("❌ You can only betray your own team.");
+  if (kind === "leak" && !nat) return say("❌ Pick a nation to leak to.");
+
+  await loadBet();
+  const p = failChance(kind);
+
+  if (Math.random() < p) {                       // the attempt falls apart
+    say("🕶️ Working in the shadows...", true);
+    const caught = Math.random() < Math.min(0.9, BT[kind].catchP * 2);
+    let fine = 0;
+    try {
+      await wmod("team:" + team, d => {
+        d.log.unshift(new Date().toLocaleTimeString() + " — ⚠️ Suspicious activity detected. Someone tried to tamper with our operations.");
+        d.log = d.log.slice(0, 10);
+        return d;
+      });
+    } catch (e) { /* ignore */ }
+
+    if (caught) {
+      fine = Math.min(money, Math.max(1000, Math.round(money * .15)));
+      money -= fine; saveGame(); pushWallet();
+      try {
+        await sb("chat_messages", { method: "POST", headers: { Prefer: "return=minimal" },
+          body: JSON.stringify([{ channel: "announce", sender: "SMFA Security",
+            body: "🚨 " + dn(currentUser) + " was caught trying to betray the " + team + " team (" + BT[kind].label.replace(/^\S+ /, "") +
+                  ")! Fined " + fmtN(fine) + " SD and marked a traitor for 24 hours." }]) });
+      } catch (e) { /* chat table may not exist */ }
+    }
+    try {
+      await bmod(b => {
+        b.cd[currentUser] = Object.assign(b.cd[currentUser] || {}, { [kind]: Date.now() });
+        b.log.unshift({ t: Date.now(), u: currentUser, k: kind, team, nat: kind === "leak" ? nat : "",
+                        res: "attempt FAILED (" + Math.round(p * 100) + "% chance), nothing gained", caught, fine });
+        b.log = b.log.slice(0, 40);
+        if (caught) b.tags[currentUser] = Date.now() + BT_TAG_MS;
+      });
+    } catch (e) { console.warn("Betrayal log:", e); }
+
+    const bal = document.getElementById("balance");
+    if (bal) bal.textContent = formatMoney(money);
+    say("💥 FAILED (" + Math.round(p * 100) + "% chance)! You gained nothing." +
+        (caught ? " Worse, you were caught: fined " + fmtN(fine) + " SD and marked a traitor for 24 hours." : " Luckily nobody saw you."), false);
+    renderBetray(true);
+    return;
+  }
+
+  btBypass = kind;                               // passed the failure roll: run the normal betrayal
+  try { await _betrayV275(kind); } finally { btBypass = null; }
+};
+
+/* ---------- Buttons show the live failure chance ---------- */
+
+setInterval(function () {
+  const box = document.getElementById("btBox");
+  if (!box || !currentUser || currentUser === "President" || !btCan()) return;
+
+  box.querySelectorAll("button[onclick^='betray']").forEach(b => {
+    const m = (b.getAttribute("onclick") || "").match(/betray\('(\w+)'\)/);
+    if (!m || !BT[m[1]]) return;
+    const k = m[1], left = btLeft(k);
+    b.textContent = BT[k].label.toUpperCase() + (left ? "  ⏳ " + fmtTime(left) : "") +
+                    "  · fail " + Math.round(failChance(k) * 100) + "%";
+  });
+
+  if (!box.querySelector("#btFailNote")) {
+    const desc = box.querySelector(".rank-description");
+    if (desc) desc.insertAdjacentHTML("afterend",
+      '<p id="btFailNote" class="rank-description">⏱️ Patience pays: you can betray before the cooldown ends, but the sooner you ' +
+      "try again the more likely it fails (10% when ready, up to 90% right after your last attempt). A failed attempt gains nothing and doubles your chance of being caught.</p>");
+  }
+}, 1000);
+
+UPDATE_LOG.unshift({
+  v: "v27.5", title: "Betrayal failure chance", items: [
+    "Betrayal cooldowns are now soft. You can try early, but the faster you go, the higher the chance it fails.",
+    "The failure chance runs from 10% (cooldown over) up to 90% (just after your last attempt) and is shown on each button.",
+    "A failed betrayal gains nothing, resets your cooldown and doubles your chance of being caught. Your team sees a suspicious-activity warning.",
+    "The President's betrayal log marks failed attempts."
+  ]
+});
     /* ===== SMFA PATCH v28: PRESIDENT POWERS (activity, demote, research, fine) ===== */
 
 const RESEARCH_COST = 250000, RESEARCH_MS = 20 * 60000;
@@ -8327,6 +8429,310 @@ UPDATE_LOG.unshift({
     "Before, prices doubled with every rank and quickly became impossible to afford (Senior Sergeant paid 6,400 SD each).",
     "Organize Supplies now costs about 4 materials' worth at your rank price instead of a flat 800 SD.",
     "The 25% team discount and the President's 1,000-per-hour limit are unchanged."
+  ]
+});
+    /* ===== SMFA PATCH v29.5: SAFER WAR SAVES + DEVICE SYNC + FIXES ===== */
+
+/* ---------- 1. After login, pull materials/recon from the cloud ---------- */
+
+const _loginV295 = login;
+login = async function () {
+  await _loginV295();
+  if (currentUser) pullAct();
+};
+
+/* ---------- 2. War balance: nations are beatable (tune these numbers) ---------- */
+
+Object.assign(HP_MAX, { Easy: 2000, Medium: 12000, Hard: 70000, Expert: 400000, Challenge: 2500000 });
+
+/* ---------- 3. Pause polling while the tab is hidden ---------- */
+
+(function pauseWhenHidden() {
+  const realSb = sb, waiting = new Map(), queue = [];
+  sb = function (path, opts) {
+    const isGet = !opts || !opts.method || opts.method === "GET";
+    if (!isGet || !document.hidden) return realSb(path, opts);
+    if (!waiting.has(path)) {
+      waiting.set(path, new Promise(resolve => {
+        queue.push(() => { waiting.delete(path); resolve(realSb(path, opts)); });
+      }));
+    }
+    return waiting.get(path).then(r => r.clone());
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) queue.splice(0).forEach(go => go());
+  });
+})();
+
+/* ---------- 4. War saves: no lost edits, no silent failures ---------- */
+
+wmod = async function (key, fn) {
+  const isW = key === "world", name = key.slice(5);
+  const enc = encodeURIComponent(key);
+  const keep = v => { if (isW) war.world = v; else war.teams[name] = v; return v; };
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const r = await sb("war_state?key=eq." + enc + "&select=data,updated_at");
+    if (!r.ok) throw new Error("war data unavailable (" + r.status + ")");
+    const row = (await r.json())[0];
+    const cur = isW ? Object.assign({ conquered: {} }, row && row.data)
+                    : Object.assign(tdef(), row && row.data);
+    const before = JSON.stringify(cur);
+    const next = fn(cur);
+    if (JSON.stringify(next) === before) return keep(next);   // nothing changed, nothing to save
+
+    const stamp = new Date(Math.max(Date.now(), row ? Date.parse(row.updated_at) + 1 : 0)).toISOString();
+    let w;
+    if (attempt === 5 || !row) {
+      // last try (or first ever save): plain save
+      w = await sb("war_state", { method: "POST",
+        headers: { "Prefer": row ? "resolution=merge-duplicates,return=representation"
+                                 : "resolution=ignore-duplicates,return=representation" },
+        body: JSON.stringify([{ key, data: next, updated_at: stamp }]) });
+      if (!w.ok) throw new Error("war save failed (" + w.status + ")");
+      if (!row && !(await w.json()).length) continue;   // somebody created it first: retry
+      return keep(next);
+    }
+    // only save if nobody else saved since we read it
+    w = await sb("war_state?key=eq." + enc + "&updated_at=eq." + encodeURIComponent(row.updated_at), {
+      method: "PATCH", headers: { "Prefer": "return=representation" },
+      body: JSON.stringify({ data: next, updated_at: stamp }) });
+    if (!w.ok) throw new Error("war save failed (" + w.status + ")");
+    if ((await w.json()).length) return keep(next);
+    // someone else saved first: loop again with fresh data
+  }
+  throw new Error("The war data is busy. Try again in a moment.");
+};
+
+let lastSpend = { amt: 0, t: 0 };
+const _actSpendV295 = actSpend;
+actSpend = function (cost) {
+  const ok = _actSpendV295(cost);
+  if (ok && cost > 0) lastSpend = { amt: cost, t: Date.now() };
+  return ok;
+};
+
+const _buyMatV295 = buyMat;
+buyMat = async function (team, m, q) {
+  const t0 = Date.now();
+  try { await _buyMatV295(team, m, q); }
+  catch (e) {
+    console.error(e);
+    if (lastSpend.t >= t0 && lastSpend.amt > 0) {   // give the money back
+      money += lastSpend.amt; lastSpend.amt = 0;
+      saveGame(); pushWallet();
+      const b = document.getElementById("balance");
+      if (b) b.textContent = formatMoney(money);
+    }
+    alert("⚠️ The purchase could not be saved, so your Smiley Dollars were refunded. (" + e.message + ")");
+  }
+};
+
+const _donateMatsV295 = donateMats;
+donateMats = async function (team) {
+  const backup = JSON.parse(JSON.stringify(getAct().mat || {}));
+  try { await _donateMatsV295(team); }
+  catch (e) {
+    console.error(e);
+    const s = getAct();
+    for (const m in backup) s.mat[m] = Math.max(s.mat[m] || 0, backup[m]);
+    putAct(s);
+    alert("⚠️ The donation could not be saved, so your materials were returned. (" + e.message + ")");
+  }
+};
+
+const _buildUnitsV295 = buildUnits;
+buildUnits = async function (team, k) {
+  try { await _buildUnitsV295(team, k); }
+  catch (e) { console.error(e); alert("⚠️ Could not build units. Nothing was charged. (" + e.message + ")"); }
+};
+
+const _attackNationV295 = attackNation;
+attackNation = async function (team, n) {
+  try { await _attackNationV295(team, n); }
+  catch (e) { console.error(e); alert("⚠️ Could not launch the attack. (" + e.message + ")"); }
+};
+
+/* ---------- 5. War page: redraw only when something changed ---------- */
+
+let warSig = "";
+const _renderWarV295 = renderWar;
+renderWar = function () {
+  const body = document.getElementById("warBody"), sel = document.getElementById("warTeam");
+  if (!body || !sel || !currentUser || !accounts[currentUser]) return _renderWarV295();
+
+  const ae = document.activeElement;
+  if (ae && body.contains(ae) && /INPUT|SELECT/.test(ae.tagName)) return;
+
+  const team = sel.value;
+  const sig = JSON.stringify([team, war.teams[team], war.world, getAct().intel,
+    accounts[currentUser].rank, leaderOf(team), myTeams(), Math.floor(Date.now() / 60000)]);
+
+  if (sig === warSig && body.firstChild) {          // only tick the battle countdown
+    const d = war.teams[team];
+    if (d && d.battle) {
+      const t = Array.from(body.querySelectorAll("b")).find(b => /^\d+:\d\d$/.test(b.textContent.trim()));
+      if (t) t.textContent = fmtTime(d.battle.endsAt - Date.now());
+    }
+    return;
+  }
+  warSig = sig;
+  _renderWarV295();
+};
+
+/* ---------- 6. Materials, recon intel and cooldowns follow you between devices ---------- */
+
+let actPushT = null, actPulling = false;
+
+const _putActV295 = putAct;
+putAct = function (s) {
+  s._t = Date.now();
+  _putActV295(s);
+  clearTimeout(actPushT);
+  actPushT = setTimeout(pushAct, 800);
+};
+
+async function pushAct() {
+  if (!currentUser || !accounts[currentUser] || walletUser !== currentUser) return;
+  try {
+    const raw = localStorage.getItem("smfaActions_" + currentUser);
+    if (!raw) return;
+    await sb("war_state", { method: "POST", headers: UPSERT,
+      body: JSON.stringify([{ key: "act:" + currentUser, data: JSON.parse(raw), updated_at: new Date().toISOString() }]) });
+  } catch (e) { console.warn("Action sync:", e); }
+}
+
+async function pullAct() {
+  if (actPulling || !currentUser || !accounts[currentUser]) return;
+  actPulling = true;
+  try {
+    const r = await sb("war_state?key=eq." + encodeURIComponent("act:" + currentUser) + "&select=data");
+    if (!r.ok) return;
+    const remote = ((await r.json())[0] || {}).data;
+    const raw = localStorage.getItem("smfaActions_" + currentUser);
+    const local = raw ? JSON.parse(raw) : null;
+    if (remote && (!local || (remote._t || 0) > (local._t || 0))) {
+      localStorage.setItem("smfaActions_" + currentUser, JSON.stringify(remote));
+      renderActionLog();
+    } else if (local && (!remote || (local._t || 0) > (remote._t || 0))) {
+      pushAct();
+    }
+  } catch (e) { console.warn("Action pull:", e); }
+  finally { actPulling = false; }
+}
+setInterval(pullAct, 6000);
+
+/* ---------- 7. iPad-safe saving (switching apps or closing the tab) ---------- */
+
+function flushNow() {
+  if (!currentUser) return;
+  try { saveGame(); } catch (e) { /* ignore */ }
+  if (walletReady && walletUser === currentUser && walletSnapshot() !== lastWalletJSON) {
+    try {
+      fetch(SUPABASE_URL + "/rest/v1/wallets", {
+        method: "POST", keepalive: true,
+        headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY,
+                   "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify([{ username: currentUser, money: walletRound(), portfolio, last_pay: lastPay,
+                                updated_at: new Date().toISOString() }])
+      });
+    } catch (e) { /* ignore */ }
+  }
+}
+
+function presenceOff() {
+  if (!currentUser) return;
+  try {
+    fetch(SUPABASE_URL + "/rest/v1/war_state", {
+      method: "POST", keepalive: true,
+      headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY,
+                 "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify([{ key: "presence:" + currentUser, data: { t: 0, a: acts }, updated_at: new Date().toISOString() }])
+    });
+  } catch (e) { /* ignore */ }
+}
+
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState === "hidden") { flushNow(); presenceOff(); }
+  else if (currentUser) { lastBeat = 0; beat(); pullAct(); }
+});
+window.addEventListener("pagehide", function () { flushNow(); presenceOff(); });
+
+/* ---------- 8. Outdated text ---------- */
+
+function fixStaticText() {
+  const box = document.querySelector("#team .info-box");       // old placeholder divisions
+  if (box) {
+    Array.from(box.children).filter(el => el.classList.contains("member")).forEach(el => el.remove());
+    const h = box.querySelector("h3");
+    if (h && h.textContent.includes("Organization Personnel")) h.textContent = "Organization";
+  }
+  const sp = document.querySelector("#supportPickerBox p.rank-description");
+  if (sp) sp.innerHTML = sp.innerHTML.replace("A war update is coming soon.",
+    "Members get a 25% discount when supplying that branch's war warehouse.");
+}
+fixStaticText();
+
+const _renderTeamV295 = renderTeam;
+renderTeam = function () {
+  _renderTeamV295();
+  const c = document.getElementById("onlinePersonnel");
+  if (c) c.innerHTML = c.innerHTML.split("Resources &amp; materials: coming soon")
+    .join("Supplies the war warehouse (25% discount for members)");
+};
+
+function fixHome() {
+  const home = document.getElementById("home");
+  const grid = home && home.querySelector(".home-grid");
+  if (!home || !grid || home.dataset.v295) return;
+  home.dataset.v295 = "1";
+
+  home.querySelectorAll(".home-card").forEach(c => {
+    const h = c.querySelector("h4"), p = c.querySelector("p");
+    if (!h || !p) return;
+    if (h.textContent.includes("Stock")) p.textContent = "Buy and sell shares in five companies. Prices move live and are shared across every device.";
+    if (h.textContent.includes("Action")) p.textContent = "Recon missions, supply runs and the world clock. Some actions cost Smiley Dollars and have cooldowns.";
+  });
+
+  [["⚔️ War", "Supply your branch, build units and attack the nations. The President picks the targets.", "war", "OPEN WAR"],
+   ["💬 Chat", "Global chat, announcements, your team channel and private messages.", "chat", "OPEN CHAT"],
+   ["📁 Portfolio", "See every soldier's rank, level, money and recent activity, and who is online.", "portfolio", "OPEN PORTFOLIO"]
+  ].forEach(([t, p, panel, btn]) => grid.insertAdjacentHTML("beforeend",
+    '<div class="home-card"><h4>' + t + "</h4><p>" + p + '</p><button class="command-button" onclick="openPanel(\'' +
+    panel + "')\">" + btn + "</button></div>"));
+
+  home.querySelectorAll(".info-box").forEach(box => {
+    const h = box.querySelector("h3"), ul = box.querySelector("ul");
+    if (!h || !ul) return;
+    if (h.textContent.includes("How It Works")) {
+      ul.querySelectorAll("li").forEach(li => {
+        if (li.textContent.includes("Stocks:"))
+          li.insertAdjacentHTML("beforeend", " The Commander team's company, <b>Sovereign Command Corp. (CMD)</b>, is listed too.");
+      });
+      ul.insertAdjacentHTML("beforeend",
+        "<li>⭐ <b>EXP &amp; Levels:</b> every rank is a level (Recruit is Level 1). Paydays, missions, supplies, chat and battles earn EXP. When you have enough, a promotion request goes to the President automatically.</li>" +
+        "<li>⚔️ <b>War:</b> supply your branch's warehouse, the leader builds units, and the President sends them against the 17 nations. Nations have HP, fight back and raid warehouses.</li>" +
+        "<li>🌎 <b>World days:</b> a new world day starts every real hour, and its event moves a company's stock.</li>" +
+        "<li>🗡️ <b>Betrayal:</b> Sergeants and above on a branch team can betray their own team for a payoff, but might get caught.</li>" +
+        "<li>💬 <b>Chat &amp; Portfolio:</b> chat with everyone or privately, and open any soldier's portfolio.</li>");
+    }
+    if (h.textContent.includes("Coming Soon")) {
+      ul.querySelectorAll("li").forEach(li => { if (li.textContent.includes("Supporting team resources")) li.remove(); });
+    }
+  });
+}
+
+const _renderHomeV295 = renderHome;
+renderHome = function () { _renderHomeV295(); fixHome(); };
+
+UPDATE_LOG.unshift({
+  v: "v29.5", title: "Fixes & polish", items: [
+    "War is easier to start: nation HP was lowered (Easy 2,000 up to Challenge 2,500,000).",
+    "Materials, recon intel and cooldowns now follow you between devices.",
+    "Buying, donating and building are safer: a failed save refunds you, and two people saving at the same moment no longer overwrite each other.",
+    "The War page no longer redraws every second, so taps register better on iPad.",
+    "Saving now works when you switch apps or close the tab on iPad, and hidden tabs stop polling.",
+    "Home and Team text updated: the placeholder divisions are gone and War, Chat, Portfolio, EXP and Betrayal are explained."
   ]
 });
 /* ==================================================
