@@ -9443,6 +9443,531 @@ renderHome = function () {
   if (e) e.items.push(...items);
   else UPDATE_LOG.unshift({ v: "v30", title: "Release update", items });
 })();
+    /* ===== SMFA PATCH v30 (PART 3): ASSISTANTS ===== */
+
+const BOOST_PCT = 0.03;         // each boost raises a company by 3%
+const BOOST_PCT_CMD = 0.06;     // the Commander company (CMD) rises by 6% instead
+const BOOST_LIMIT = 3;          // shared by the whole Assistant team per 24 h (also set to 3 in the SQL)
+const BOOST_ONLY_CMD = false;   // true = Assistants may only boost the Commander company (CMD)
+const BULK_MIN = 100;           // an order this big counts as "bulk"
+const BULK_DISCOUNT = 0.30;     // Assistants pay 30% less on bulk orders
+
+const isAssist = u => !!u && !!accounts[u] && (accounts[u].team === "Assistant" || supportTeams[u] === "Assistant");
+const isMainAssist = u => !!u && !!accounts[u] && accounts[u].team === "Assistant";
+const assistVisible = () => !!currentUser && (currentUser === "President" || isAssist(currentUser));
+
+let testsOpen = [], testJoins = [], onlineAssist = [], reportDraft = {};
+const testSeen = new Set();
+let testDraft = { ver: "", title: "", notes: "", wanted: 2 };
+let boost = { used: 0, left: BOOST_LIMIT, next_in: 0, at: 0 }, boostPick = "";
+let bugRows = [], bugErr = "", sharedIntel = {}, assistMsg = "", assistSig = "", bulkQ = 0;
+
+/* ---------- Tab ---------- */
+
+(function buildAssistTab() {
+  const team = document.getElementById("team");
+  if (!team || document.getElementById("assist")) return;
+  const p = document.createElement("div");
+  p.id = "assist"; p.className = "panel";
+  p.innerHTML = '<h2>🛠️ ASSISTANTS</h2><div id="assistBody"></div>';
+  team.parentNode.insertBefore(p, team);
+
+  const nav = document.querySelector(".navigation");
+  if (nav) {
+    const b = document.createElement("button");
+    b.id = "assistButton"; b.textContent = "🛠️ ASSISTANTS"; b.style.display = "none";
+    b.onclick = () => openPanel("assist");
+    nav.insertBefore(b, nav.lastElementChild);
+  }
+})();
+
+/* ---------- Loading ---------- */
+
+async function loadTests() {
+  try {
+    const [a, b] = await Promise.all([sb("smfa_tests?status=eq.open&select=*&order=id.desc"), sb("smfa_test_joins?select=*")]);
+    if (a.ok) testsOpen = await a.json();
+    if (b.ok) testJoins = await b.json();
+    if (currentUser === "President") {
+      const r = await sb("war_state?key=like.presence:*&select=key,data");
+      if (r.ok) onlineAssist = (await r.json())
+        .filter(x => x.data && Date.now() - (x.data.t || 0) < ONLINE_MS)
+        .map(x => x.key.slice(9))
+        .filter(u => accounts[u] && accounts[u].team === "Assistant");
+    }
+  } catch (e) { console.warn("Tests:", e); }
+}
+
+async function loadBoost() {
+  try {
+    const r = await sb("rpc/smfa_boost_status", { method: "POST", body: "{}" });
+    if (!r.ok) return;
+    const j = await r.json();
+    boost = { used: j.used, left: j.left, next_in: j.next_in, at: Date.now() };
+  } catch (e) { /* ignore */ }
+}
+
+async function loadBugs() {
+  if (currentUser !== "President" || !auth) return;
+  try {
+    const r = await sb("rpc/smfa_bug_list", { method: "POST", body: JSON.stringify({ p_pw: auth.pw }) });
+    if (!r.ok) throw new Error(r.status);
+    const j = await r.json();
+    if (j && j.ok) { bugRows = j.rows || []; bugErr = ""; } else bugErr = (j && j.err) || "error";
+  } catch (e) { bugErr = e.message; }
+}
+
+async function loadIntel() {
+  try {
+    const r = await sb("war_state?key=eq.intel&select=data");
+    if (!r.ok) return;
+    const row = (await r.json())[0];
+    sharedIntel = (row && row.data) || {};
+  } catch (e) { /* ignore */ }
+}
+
+/* ---------- Shared recon: scout once, the whole army sees it ---------- */
+
+const _getActV30a = getAct;
+getAct = function () {
+  const s = _getActV30a();
+  s.intel = Object.assign({}, sharedIntel, s.intel);
+  return s;
+};
+
+async function shareIntel() {
+  if (!currentUser || !accounts[currentUser]) return;
+  const mine = getAct().intel || {};
+  if (Object.keys(mine).every(n => sharedIntel[n])) return;
+  try {
+    const r0 = await sb("war_state?key=eq.intel&select=data");
+    const cur = ((r0.ok && (await r0.json())[0]) || {}).data || {};
+    const merged = Object.assign({}, cur, mine);
+    const r = await sb("war_state", { method: "POST", headers: UPSERT,
+      body: JSON.stringify([{ key: "intel", data: merged, updated_at: new Date().toISOString() }]) });
+    if (r.ok) sharedIntel = merged;
+  } catch (e) { console.warn("Share intel:", e); }
+}
+
+const _runActionV30a = runAction;
+runAction = function (k) {
+  _runActionV30a(k);
+  if (k === "recon") setTimeout(shareIntel, 400);
+};
+
+/* ---------- Bulk supplies: Assistants pay less on big orders ---------- */
+
+const _actSpendV30a = actSpend;
+actSpend = function (cost) {
+  if (bulkQ >= BULK_MIN && isAssist(currentUser)) cost = Math.round(cost * (1 - BULK_DISCOUNT));
+  bulkQ = 0;                      // only the first spend after a purchase gets the deal
+  return _actSpendV30a(cost);
+};
+
+const _buyMatV30a = buyMat;
+buyMat = async function (team, m, q) {
+  bulkQ = q;
+  try { return await _buyMatV30a(team, m, q); } finally { bulkQ = 0; }
+};
+
+const _renderWarV30a = renderWar;
+renderWar = function () {
+  _renderWarV30a();
+  if (!isAssist(currentUser)) return;
+  const body = document.getElementById("warBody");
+  if (!body) return;
+  const h = Array.from(body.querySelectorAll("h3")).find(x => x.textContent.includes("Supply this team"));
+  const p = h && h.nextElementSibling;
+  if (p && !p.textContent.includes("Assistant bulk deal")) {
+    p.textContent += " Assistant bulk deal: " + Math.round(BULK_DISCOUNT * 100) + "% off orders of " + BULK_MIN + "+ materials.";
+  }
+};
+
+/* ---------- Raise a stock ---------- */
+
+async function doBoost() {
+  const say = (t, ok) => { const m = document.getElementById("boostResult"); if (m) { m.textContent = t; m.className = ok ? "success" : "error"; } };
+  if (!isAssist(currentUser) || !auth) return say("❌ Only Assistants can raise stocks. Log in again if you just joined the team.");
+  if (jailedNow(currentUser)) return say("⛓️ Prisoners can't do this.");
+  const t = boostPick || (BOOST_ONLY_CMD ? "CMD" : Object.keys(companies)[0]);
+  if (!companies[t]) return say("❌ Choose a company.");
+  if (BOOST_ONLY_CMD && t !== "CMD") return say("❌ Assistants can only boost the Commander company.");
+
+  say("📡 Raising the stock...", true);
+  try {
+    const r = await sb("rpc/smfa_boost", { method: "POST", body: JSON.stringify({ p_user: currentUser, p_pw: auth.pw, p_ticker: t }) });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    const out = await r.json();
+    if (!out.ok) {
+      const msg = { role: "❌ Only Assistants can raise stocks.", jail: "⛓️ Prisoners can't do this.",
+        bad: "❌ The server rejected your password.", locked: "⏳ Too many wrong attempts. Try again later.",
+        badticker: "❌ That company can't be boosted.",
+        limit: "⏳ The team has used all " + BOOST_LIMIT + " boosts. The next slot opens in " + fmtDur((out.next_in || 0) * 1000) + "." };
+      if (out.err === "limit") boost = { used: BOOST_LIMIT, left: 0, next_in: out.next_in || 0, at: Date.now() };
+      renderAssist(true);
+      return say(msg[out.err] || "❌ Could not boost. (" + out.err + ")");
+    }
+    // the server gave us a slot: apply the boost to the shared market
+    const pct = t === "CMD" ? BOOST_PCT_CMD : BOOST_PCT;
+    const p = Math.max(1, companies[t].price * (1 + pct));
+    companies[t].price = p;
+    [history[t], stockHistory[t]].forEach(a => { a.push(p); if (a.length > 60) a.shift(); });
+    saveGame(); renderStocks(); pushMarket();
+    logAct("📈 Raised " + t + " by " + Math.round(pct * 100) + "%");
+    await loadBoost();
+    renderAssist(true);
+    say("✅ " + companies[t].name + " rose " + Math.round(pct * 100) + "%! " + out.left + " boost(s) left for the team.", true);
+  } catch (e) {
+    console.error(e);
+    say("⚠️ Could not boost. Did you run the Assistants SQL? (" + e.message + ")");
+  }
+}
+
+/* ---------- Test requests ---------- */
+
+function pickTestVersion(v) {
+  const u = UPDATE_LOG.find(x => x.v === v);
+  testDraft.ver = v;
+  if (u) testDraft.title = u.v + " — " + u.title;
+  renderAssist(true);
+}
+
+async function askAssistants() {
+  if (currentUser !== "President" || !auth) return;
+  const d = testDraft, title = d.title.trim().replace(/\s+/g, " ");
+  if (title.length < 3) { assistMsg = "❌ Give the test a title (3+ characters)."; return renderAssist(true); }
+  const wanted = Math.max(1, Math.min(6, Math.floor(+d.wanted) || 2));
+  try {
+    const r = await sb("rpc/smfa_test_create", { method: "POST",
+      body: JSON.stringify({ p_pw: auth.pw, p_version: d.ver || "", p_title: title, p_notes: d.notes.trim(), p_wanted: wanted }) });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    const out = await r.json();
+    if (out !== "ok") assistMsg = "❌ Could not create the request. (" + out + ")";
+    else {
+      assistMsg = "✅ Test request sent. Online main Assistants will see a popup. Needs " + wanted + " tester(s).";
+      logAct("🧪 Asked the Assistants to test: " + title);
+      testDraft = { ver: "", title: "", notes: "", wanted: 2 };
+    }
+  } catch (e) { assistMsg = "⚠️ Could not send. Did you run the Assistants SQL? (" + e.message + ")"; }
+  await loadTests();
+  renderAssist(true);
+}
+
+async function releaseNow() {
+  if (currentUser !== "President") return;
+  const label = (testDraft.title || "").trim() || testDraft.ver;
+  if (!label) { assistMsg = "❌ Pick an update or type a title first."; return renderAssist(true); }
+  if (!confirm("Announce \"" + label + "\" as released to everyone?\n(This only posts the announcement. Publish the code first.)")) return;
+  try {
+    const r = await sb("chat_messages", { method: "POST", headers: { Prefer: "return=minimal" },
+      body: JSON.stringify([{ channel: "announce", sender: "SMFA Command",
+        body: "🚀 UPDATE RELEASED: " + label + ". Refresh the page and check the Update Log on the Home tab!" }]) });
+    if (!r.ok) throw new Error(r.status);
+    assistMsg = "✅ Release announced in the Announcements channel.";
+    logAct("🚀 Announced release: " + label);
+  } catch (e) { assistMsg = "⚠️ Could not announce. (" + e.message + ")"; }
+  renderAssist(true);
+}
+
+async function joinTest(id) {
+  if (!auth) return;
+  try {
+    const r = await sb("rpc/smfa_test_join", { method: "POST", body: JSON.stringify({ p_user: currentUser, p_pw: auth.pw, p_test: id }) });
+    if (!r.ok) throw new Error(r.status);
+    const out = await r.json();
+    const msg = { ok: "✅ You joined the test. Follow the notes, then send your report.",
+      role: "❌ Only main-team Assistants can test.", closed: "❌ That test is closed.",
+      full: "❌ Enough testers already joined.", jail: "⛓️ Prisoners can't test.", bad: "❌ The server rejected your password." };
+    assistMsg = msg[out] || "❌ " + out;
+    if (out === "ok") logAct("🧪 Joined a test");
+  } catch (e) { assistMsg = "⚠️ Could not join. (" + e.message + ")"; }
+  await loadTests();
+  renderAssist(true);
+}
+
+async function sendTestReport(id, result) {
+  if (!auth) return;
+  try {
+    const r = await sb("rpc/smfa_test_report", { method: "POST",
+      body: JSON.stringify({ p_user: currentUser, p_pw: auth.pw, p_test: id, p_result: result, p_note: reportDraft[id] || "" }) });
+    if (!r.ok) throw new Error(r.status);
+    const out = await r.json();
+    assistMsg = out === "ok" ? "✅ Report sent to the President. Thank you!" : "❌ Could not send the report. (" + out + ")";
+    if (out === "ok") delete reportDraft[id];
+  } catch (e) { assistMsg = "⚠️ Could not send. (" + e.message + ")"; }
+  await loadTests();
+  renderAssist(true);
+}
+
+async function closeTest(id) {
+  if (currentUser !== "President" || !auth || !confirm("Close this test request?")) return;
+  try {
+    await sb("rpc/smfa_test_close", { method: "POST", body: JSON.stringify({ p_pw: auth.pw, p_test: id }) });
+    assistMsg = "✅ Test closed.";
+  } catch (e) { assistMsg = "⚠️ Could not close. (" + e.message + ")"; }
+  await loadTests();
+  renderAssist(true);
+}
+
+function showTestAsk(t) {
+  const old = document.getElementById("testAsk");
+  if (old) old.remove();
+  const d = document.createElement("div");
+  d.id = "testAsk";
+  d.style.cssText = "position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:10001;background:#181818;" +
+    "border:2px solid #00ff88;border-radius:12px;padding:16px 20px;max-width:92%;width:420px;" +
+    "box-shadow:0 0 30px rgba(0,255,136,.4);text-align:center;";
+  d.innerHTML = "<b>🧪 The President needs testers!</b><br>" + escapeHTML(t.title) +
+    (t.notes ? '<br><span style="color:#aaa;font-size:13px;">' + escapeHTML(t.notes) + "</span>" : "") +
+    '<br><span style="color:#888;font-size:12px;">Needs ' + Number(t.wanted) + " tester(s)</span><br>" +
+    '<button class="command-button" style="margin-top:10px;" id="taJoin">JOIN</button>' +
+    '<button class="command-button" style="margin-top:10px;" id="taLater">LATER</button>';
+  document.body.appendChild(d);
+  d.querySelector("#taJoin").onclick = async () => { d.remove(); await joinTest(t.id); };
+  d.querySelector("#taLater").onclick = () => d.remove();
+}
+
+function askTesters() {
+  if (!isMainAssist(currentUser) || jailedNow(currentUser) || !auth) return;
+  testsOpen.forEach(t => {
+    if (testSeen.has(t.id)) return;
+    testSeen.add(t.id);
+    const js = testJoins.filter(j => j.test_id === t.id);
+    if (js.some(j => j.username === currentUser) || js.length >= t.wanted) return;
+    if (Date.now() - Date.parse(t.created_at) > 3600000) return;     // older than an hour: no popup
+    showTestAsk(t);
+  });
+}
+
+/* ---------- Bug reports ---------- */
+
+(function buildBugBox() {
+  const a = document.getElementById("usernameBox");
+  if (!a || document.getElementById("bugBox")) return;
+  const b = document.createElement("div");
+  b.className = "account-section"; b.id = "bugBox";
+  b.innerHTML = '<h3>🐞 Report a Bug</h3>' +
+    '<p class="rank-description">Found something broken? Say what you did and what went wrong. It goes straight to the President.</p>' +
+    '<textarea id="bugText" class="account-input" maxlength="500" rows="3" placeholder="What happened?"></textarea>' +
+    '<button class="command-button" onclick="sendBug()">📨 SEND REPORT</button><p id="bugResult"></p>';
+  a.parentNode.insertBefore(b, a);
+})();
+
+async function sendBug() {
+  const say = (t, ok) => { const m = document.getElementById("bugResult"); if (m) { m.textContent = t; m.className = ok ? "success" : "error"; } };
+  const input = document.getElementById("bugText");
+  const text = input.value.trim();
+  if (!currentUser || !auth) return say("❌ Log in again to send reports.");
+  if (text.length < 5) return say("❌ Please describe the problem (at least 5 characters).");
+  try {
+    const r = await sb("rpc/smfa_bug_report", { method: "POST", body: JSON.stringify({ p_user: currentUser, p_pw: auth.pw, p_body: text }) });
+    if (!r.ok) throw new Error(r.status);
+    const out = await r.json();
+    const msg = { ok: "✅ Report sent. Thank you!", limit: "⏳ You've sent 5 reports this hour. Try again later.",
+      empty: "❌ Please describe the problem.", bad: "❌ The server rejected your password.", locked: "⏳ Too many wrong attempts." };
+    if (out === "ok") input.value = "";
+    say(msg[out] || "❌ Could not send. (" + out + ")", out === "ok");
+  } catch (e) { say("⚠️ Could not send. Did you run the Assistants SQL? (" + e.message + ")"); }
+}
+
+async function bugSet(id, status) {
+  if (currentUser !== "President" || !auth) return;
+  try { await sb("rpc/smfa_bug_set", { method: "POST", body: JSON.stringify({ p_pw: auth.pw, p_id: id, p_status: status }) }); }
+  catch (e) { console.error(e); }
+  await loadBugs();
+  renderAssist(true);
+}
+
+/* ---------- Assistants page ---------- */
+
+function renderAssist(force) {
+  const body = document.getElementById("assistBody"), panel = document.getElementById("assist");
+  if (!body || !panel || !panel.classList.contains("active") || !currentUser || !accounts[currentUser]) return;
+
+  const pres = currentUser === "President", main = isMainAssist(currentUser), any = isAssist(currentUser);
+  const sig = JSON.stringify([pres, main, any, testsOpen.map(t => t.id), testJoins.map(j => [j.test_id, j.username, j.result]),
+    boost.used, bugRows.map(b => [b.id, b.status]), onlineAssist, assistMsg, bugErr]);
+  const ae = document.activeElement;
+  if (!force) {
+    if (sig === assistSig) return;
+    if (body.contains(ae) && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return;
+  }
+  assistSig = sig;
+
+  let h = assistMsg ? '<div class="info-box"><p>' + escapeHTML(assistMsg) + "</p></div>" : "";
+
+  /* testing */
+  h += '<div class="info-box"><h3>🧪 Update Testing</h3>';
+  if (pres) {
+    const entries = UPDATE_LOG.slice(0, 12);
+    h += '<p class="rank-description">Pick an update. You can <b>release it right away</b>, or <b>ask the online main Assistants to test it</b> first. You can ask for tests as often as you like, even after release.</p>' +
+      '<select class="promo-select" onchange="pickTestVersion(this.value)"><option value="">— custom —</option>' +
+      entries.map(u => '<option value="' + escapeHTML(u.v) + '"' + (testDraft.ver === u.v ? " selected" : "") + ">" + escapeHTML(u.v) + " — " + escapeHTML(u.title) + "</option>").join("") + "</select>" +
+      '<input class="account-input" maxlength="80" placeholder="Title (what is being tested?)" value="' + escapeHTML(testDraft.title) + '" oninput="testDraft.title=this.value">' +
+      '<textarea class="account-input" rows="2" maxlength="300" placeholder="Instructions, e.g. one tester gets arrested, the others watch" oninput="testDraft.notes=this.value">' + escapeHTML(testDraft.notes) + "</textarea>" +
+      'Testers needed: <input type="number" min="1" max="6" class="account-input" style="width:90px;display:inline-block;" value="' + escapeHTML(String(testDraft.wanted)) + '" oninput="testDraft.wanted=this.value">' +
+      "<p>🟢 Online main Assistants: <b>" + onlineAssist.length + "</b>" + (onlineAssist.length ? " (" + onlineAssist.map(u => escapeHTML(dn(u))).join(", ") + ")" : "") + "</p>" +
+      '<button class="command-button" onclick="releaseNow()">🚀 RELEASE NOW</button>' +
+      '<button class="command-button" onclick="askAssistants()">🧪 ASK ASSISTANTS TO TEST</button>';
+  } else if (!main) {
+    h += '<p class="rank-description">Testing is for the <b>main</b> Assistant team. You can still raise stocks and get the bulk deal.</p>';
+  } else {
+    h += '<p class="rank-description">When the President needs testers, a popup appears for online main Assistants. Join, follow the notes, then report.</p>';
+  }
+
+  h += testsOpen.length ? testsOpen.map(t => {
+    const js = testJoins.filter(j => j.test_id === t.id), mine = js.find(j => j.username === currentUser);
+    let row = '<div class="member"><b>🧪 ' + escapeHTML(t.title) + "</b>" +
+      (t.notes ? '<br><span class="rank-description">' + escapeHTML(t.notes) + "</span>" : "") +
+      "<br>Testers: <b>" + js.length + " / " + Number(t.wanted) + "</b>" +
+      (js.length ? "<br>" + js.map(j => escapeHTML(dn(j.username)) +
+        (j.result ? " — " + (j.result === "pass" ? "✅ works" : "❌ broken") + (j.note ? ": " + escapeHTML(j.note) : "") : " — testing...")).join("<br>") : "");
+    if (main && !mine && js.length < t.wanted) row += '<br><button class="command-button" style="margin-top:8px;" onclick="joinTest(' + Number(t.id) + ')">🧪 JOIN TEST</button>';
+    if (main && mine && !mine.result) {
+      row += '<br><input class="account-input" maxlength="200" placeholder="What did you see? (optional)" value="' + escapeHTML(reportDraft[t.id] || "") + '" oninput="reportDraft[' + Number(t.id) + ']=this.value">' +
+        '<button class="command-button" onclick="sendTestReport(' + Number(t.id) + ',\'pass\')">✅ IT WORKS</button>' +
+        '<button class="command-button" onclick="sendTestReport(' + Number(t.id) + ',\'fail\')">❌ BROKEN</button>';
+    }
+    if (pres) row += '<br><button class="command-button" style="margin-top:8px;" onclick="closeTest(' + Number(t.id) + ')">CLOSE REQUEST</button>';
+    return row + "</div>";
+  }).join("") : '<p class="rank-description">No open test requests.</p>';
+  h += "</div>";
+
+  /* stock boost */
+  if (any || pres) {
+    const left = Math.max(0, boost.left), nextMs = Math.max(0, boost.next_in * 1000 - (Date.now() - boost.at));
+    h += '<div class="info-box"><h3>📈 Raise a Stock</h3>' +
+      '<p class="rank-description">Free. Each boost raises one company by ' + Math.round(BOOST_PCT * 100) + '%, or the Commander company (CMD) by ' + Math.round(BOOST_PCT_CMD * 100) + '%. The whole Assistant team (main and supporting) shares <b>' + BOOST_LIMIT + " boosts per 24 hours</b>.</p>" +
+      "<p>Boosts left: <b>" + left + " / " + BOOST_LIMIT + "</b>" +
+      (left < BOOST_LIMIT && nextMs > 0 ? ' · next slot in <b class="aTimer" data-end="' + (Date.now() + nextMs) + '">' + fmtDur(nextMs) + "</b>" : "") + "</p>";
+    if (any) {
+      const keys = Object.keys(companies).filter(t => !BOOST_ONLY_CMD || t === "CMD");
+      if (!boostPick || !keys.includes(boostPick)) boostPick = keys[0];
+      h += '<select class="promo-select" onchange="boostPick=this.value">' +
+        keys.map(t => '<option value="' + t + '"' + (boostPick === t ? " selected" : "") + ">" + escapeHTML(companies[t].name) + " (" + t + ") — " + formatMoney(companies[t].price) + "</option>").join("") +
+        '</select><button class="command-button" onclick="doBoost()">📈 RAISE IT</button><p id="boostResult"></p>';
+    }
+    h += "</div>";
+  }
+
+  /* perks */
+  if (any) {
+    h += '<div class="info-box"><h3>🎖️ Assistant Perks</h3><ul class="home-list">' +
+      "<li>🔎 <b>Shared recon:</b> a nation scouted by anyone is known to the whole army, so scout one you haven't.</li>" +
+      "<li>📦 <b>Bulk deal:</b> " + Math.round(BULK_DISCOUNT * 100) + "% off orders of " + BULK_MIN + "+ materials for any warehouse.</li>" +
+      "<li>🫡 <b>Stand-in:</b> if the President is offline when an execution starts, the first Assistant to tap STAND IN earns an extra share.</li></ul></div>";
+  }
+
+  /* bug inbox */
+  if (pres) {
+    h += '<div class="info-box"><h3>🐞 Bug Inbox</h3>' +
+      (bugErr ? '<p class="error">⚠️ Could not load: ' + escapeHTML(bugErr) + "</p>" : "") +
+      (bugRows.length ? bugRows.map(b => '<div class="member"' + (b.status === "done" ? ' style="opacity:.6;"' : "") + ">" +
+        (b.kind === "test" ? "🧪" : "🐞") + " <b>" + escapeHTML(dn(b.reporter)) + '</b> <span class="rank-description">' +
+        escapeHTML(new Date(b.created_at).toLocaleString()) + "</span><br>" + escapeHTML(b.body) +
+        '<br><button class="command-button" style="margin-top:8px;" onclick="bugSet(' + Number(b.id) + ",'" + (b.status === "done" ? "open" : "done") + "')\">" +
+        (b.status === "done" ? "↩️ REOPEN" : "✅ DONE") + "</button>" +
+        '<button class="command-button" style="margin-top:8px;" onclick="bugSet(' + Number(b.id) + ",'delete')\">🗑️ DELETE</button></div>").join("")
+        : '<p class="rank-description">No reports. Everything works... allegedly.</p>') + "</div>";
+  }
+
+  body.innerHTML = h;
+}
+
+/* ---------- Stand-in button on the execution screen ---------- */
+
+const _showExecutionV30a = showExecution;
+showExecution = function (ev, condemned) {
+  _showExecutionV30a(ev, condemned);
+  if (condemned || !isAssist(currentUser) || ev.pres !== false || (ev.data && ev.data.standin) || jailedNow(currentUser) || !auth) return;
+  const card = document.querySelector("#exOverlay .ex-card");
+  if (!card) return;
+  const b = document.createElement("button");
+  b.className = "login-button ex-btn";
+  b.style.cssText = "animation-delay:6s;background:#f1c40f;color:#000;";
+  b.textContent = "🫡 STAND IN FOR THE PRESIDENT";
+  b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const r = await sb("rpc/smfa_standin", { method: "POST", body: JSON.stringify({ p_event: ev.id, p_user: currentUser, p_pw: auth.pw }) });
+      const ok = r.ok && (await r.json()) === true;
+      b.textContent = ok ? "✅ You are standing in for the President" : "❌ Someone else already stood in, or the window closed";
+    } catch (e) { b.textContent = "⚠️ Could not stand in"; }
+  };
+  card.appendChild(b);
+};
+
+/* ---------- Wiring ---------- */
+
+const _updateCommandCenterV30a = updateCommandCenter;
+updateCommandCenter = function () {
+  _updateCommandCenterV30a();
+  const b = document.getElementById("assistButton");
+  if (b) b.style.display = assistVisible() ? "" : "none";
+};
+
+const _openPanelV30a = openPanel;
+openPanel = async function (name) {
+  if (name === "assist" && !assistVisible()) return;
+  await _openPanelV30a(name);
+  if (name === "assist") {
+    await Promise.all([loadTests(), loadBoost(), currentUser === "President" ? loadBugs() : null]);
+    renderAssist(true);
+  }
+};
+
+setInterval(async function () {
+  if (!currentUser || !accounts[currentUser] || document.hidden) return;
+  const jobs = [loadIntel()];
+  if (isMainAssist(currentUser) || currentUser === "President") jobs.push(loadTests());
+  const p = document.getElementById("assist");
+  const open = p && p.classList.contains("active");
+  if (open && (isAssist(currentUser) || currentUser === "President")) jobs.push(loadBoost());
+  if (open && currentUser === "President") jobs.push(loadBugs());
+  await Promise.all(jobs);
+  askTesters();
+  if (open) renderAssist();
+}, 6000);
+
+setInterval(function () {
+  document.querySelectorAll("#assistBody .aTimer").forEach(el => {
+    el.textContent = fmtDur(Number(el.dataset.end) - Date.now());
+  });
+}, 1000);
+
+const _loginV30a = login;
+login = async function () {
+  await _loginV30a();
+  if (!currentUser) return;
+  loadIntel().then(() => setTimeout(shareIntel, 3000));      // add your old recon to the shared pool
+};
+
+const _renderHomeV30a = renderHome;
+renderHome = function () {
+  _renderHomeV30a();
+  const home = document.getElementById("home");
+  if (!home || home.dataset.assist) return;
+  const box = Array.from(home.querySelectorAll(".info-box")).find(b => b.querySelector("h3") && b.querySelector("h3").textContent.includes("How It Works"));
+  const ul = box && box.querySelector("ul");
+  if (!ul) return;
+  home.dataset.assist = "1";
+  ul.insertAdjacentHTML("beforeend", "<li>🛠️ <b>Assistants:</b> they help the President by testing updates, raising stocks (the team shares 3 boosts a day), scouting for the whole army, buying warehouse supplies cheaper in bulk, and standing in at executions.</li>");
+};
+
+(function addAssistLog() {
+  const items = [
+    "New 🛠️ ASSISTANTS tab for the President and Assistant team members.",
+    "The President can release an update right away, or ask online main Assistants to test it first. Testers join, follow the notes and report if it works. Tests can be requested as often as needed.",
+    "Assistants (main and supporting) can raise any company's stock by 3% for free, and the Commander company (CMD) by 6%. The whole team shares 3 boosts per 24 hours.",
+    "Shared recon: a nation scouted by anyone is known to the whole army.",
+    "Assistants get 30% off material orders of 100 or more.",
+    "Everyone can send a bug report from the Command Center. Only the President can read the inbox.",
+    "If the President is offline when an execution starts, the first Assistant to stand in earns an extra share."
+  ];
+  const e = UPDATE_LOG.find(x => x.v === "v30");
+  if (e) e.items.push(...items);
+  else UPDATE_LOG.unshift({ v: "v30", title: "Release update", items });
+})();
 /* ==================================================
    START
 ================================================== */
