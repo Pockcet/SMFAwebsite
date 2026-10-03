@@ -8889,13 +8889,560 @@ changeUsername = async function () {
 };
 
 UPDATE_LOG.unshift({
-  v: "v30", title: "Release update part 1", items: [
+  v: "v30", title: "Release update", items: [
     "Passwords are now stored as secure hashes on the server. Other players and the database table can no longer see them.",
     "Logging in, creating an account and changing your password now go through the server.",
     "After 8 wrong password attempts, an account is locked for 10 minutes.",
     "Old saved copies of other players' passwords were cleared from this device."
   ]
 });
+    /* ===== SMFA PATCH v30 (PART 2+3): JAIL + EXECUTION ===== */
+
+const LIFE_MS = 48 * 3600000;       // a lifetime prisoner can be executed once 48 hours have passed
+let jails = {}, yard = [], jailSig = "", pfDeadSel = null, exBusy = false;
+let jailDraft = { who: "", crime: "", custom: "", hours: "", life: false };
+const exSeen = new Set(), finTried = {};
+
+/* ---------- 57 preset crimes: [name, minutes], 0 minutes = lifetime ---------- */
+
+const CRIMES = [
+  { g: "Minor offences", list: [
+    ["Breaking curfew", 15], ["Disorderly conduct", 20], ["Drunk on duty", 20],
+    ["Spreading false rumors", 30], ["Gambling on duty", 30], ["Disobeying a direct order", 30],
+    ["Disrespecting an officer", 40], ["Neglect of duty", 45], ["Insubordination", 45],
+    ["Absent without leave (AWOL)", 60], ["Petty theft", 60], ["Unauthorized use of equipment", 60],
+    ["Trespassing in a restricted area", 60], ["Vandalism of base property", 90],
+    ["Harassing a fellow soldier", 90], ["Lying to a superior", 90]
+  ]},
+  { g: "Serious offences", list: [
+    ["Theft of army supplies", 180], ["Impersonating an officer", 240], ["Misuse of command authority", 240],
+    ["Fraud", 240], ["Reckless endangerment of troops", 300], ["Assault on a fellow soldier", 300],
+    ["Tax evasion", 300], ["Forgery of orders", 360], ["Bribery", 360], ["Smuggling contraband", 360],
+    ["Embezzlement", 480], ["Blackmail", 480], ["Insider trading", 480], ["Extortion", 600],
+    ["Market manipulation", 600], ["Money laundering", 600], ["Hacking the army network", 720],
+    ["Counterfeiting Smiley Dollars", 720]
+  ]},
+  { g: "Major crimes", list: [
+    ["Corruption of an officer", 1080], ["Desertion", 1440], ["Sabotage of equipment", 1440],
+    ["Arson of a base building", 1440], ["Conspiracy against command", 1440], ["Manslaughter", 1800],
+    ["Hijacking a vessel", 1800], ["Kidnapping", 2160], ["Armed robbery of the warehouse", 2160],
+    ["Leaking classified intel", 2160], ["Poisoning army supplies", 2160], ["Aiding the enemy", 2880],
+    ["Espionage", 2880], ["Mutiny", 2880], ["Attacking a friendly base", 2880]
+  ]},
+  { g: "Capital crimes (lifetime)", list: [
+    ["Treason", 0], ["High treason", 0], ["Murder", 0], ["War crimes", 0],
+    ["Selling army secrets to the enemy", 0], ["Leading a rebellion", 0],
+    ["Attempted coup against the President", 0], ["Attempted assassination of the President", 0]
+  ]}
+];
+
+function fmtLen(min) {
+  if (!min) return "Lifetime";
+  if (min < 60) return min + " min";
+  if (min < 1440) { const h = Math.floor(min / 60), m = min % 60; return h + " h" + (m ? " " + m + " min" : ""); }
+  const d = Math.floor(min / 1440), h = Math.round((min % 1440) / 60);
+  return d + " day" + (d > 1 ? "s" : "") + (h ? " " + h + " h" : "");
+}
+function fmtDur(ms) {
+  const s = Math.max(0, Math.ceil(ms / 1000)), d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return (d ? d + "d " : "") + String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+}
+
+/* ---------- Jail state ---------- */
+
+const jailActive = j => !!j && (j.lifetime || Date.parse(j.release_at) > Date.now());
+const jailOf = u => (u ? jails[u] : null);
+const jailedNow = u => jailActive(jailOf(u));
+
+async function loadJails() {
+  try {
+    const r = await sb("smfa_jail?select=*");
+    if (!r.ok) return;
+    const m = {};
+    (await r.json()).forEach(x => { m[x.username] = x; });
+    jails = m;
+  } catch (e) { console.warn("Jail:", e); }
+}
+async function loadYard() {
+  try {
+    const r = await sb("smfa_graveyard?select=*&order=id.desc&limit=100");
+    if (r.ok) yard = await r.json();
+  } catch (e) { console.warn("Graveyard:", e); }
+}
+
+/* ---------- What a prisoner can't do ---------- */
+
+function blockJail(what) {
+  const j = jailOf(currentUser);
+  if (!jailActive(j)) return false;
+  alert("⛓️ You are in jail for " + j.crime + ". You can't " + what + " until you are released. You can still chat.");
+  return true;
+}
+
+[["buy", "buy stocks"], ["sell", "sell stocks"], ["buyMat", "buy materials"], ["donateMats", "donate materials"],
+ ["buildUnits", "build units"], ["commandMessage", "request promotions"], ["betray", "betray anyone"]
+].forEach(([name, what]) => {
+  const orig = window[name];
+  if (typeof orig !== "function") return;
+  window[name] = function () {
+    if (blockJail(what)) return;
+    return orig.apply(this, arguments);
+  };
+});
+
+const _runActionV30j = runAction;
+runAction = function (k) {
+  if ((k === "recon" || k === "supplies") && blockJail("run missions")) return;
+  _runActionV30j(k);
+};
+
+// no pay while in jail
+const _incomeBreakdownV30j = incomeBreakdown;
+incomeBreakdown = function () {
+  const b = _incomeBreakdownV30j();
+  return jailedNow(currentUser) ? { salary: 0, dividends: 0, owner: 0, total: 0 } : b;
+};
+const _payToastV30j = payToast;
+payToast = function (h) {
+  if (jailedNow(currentUser) && typeof h === "string" && /PAYDAY/.test(h)) return;
+  _payToastV30j(h);
+};
+const _addExpV30j = addExp;
+addExp = function (n) { if (jailedNow(currentUser)) return; _addExpV30j(n); };
+
+/* ---------- Banner for the prisoner ---------- */
+
+(function buildJailBanner() {
+  const h = document.querySelector("header");
+  if (!h || document.getElementById("jailBanner")) return;
+  const b = document.createElement("div");
+  b.id = "jailBanner";
+  b.style.cssText = "display:none;background:#3a0d0d;border-bottom:3px solid #ff4d4d;color:#ffb3b3;text-align:center;padding:12px;font-weight:bold;";
+  h.insertAdjacentElement("afterend", b);
+})();
+
+function renderJailBanner() {
+  const b = document.getElementById("jailBanner");
+  if (!b) return;
+  const j = currentUser ? jailOf(currentUser) : null;
+  if (!jailActive(j)) { b.style.display = "none"; return; }
+  let t;
+  if (j.lifetime) {
+    const left = Date.parse(j.jailed_at) + LIFE_MS - Date.now();
+    t = "⛓️ LIFETIME SENTENCE for " + escapeHTML(j.crime) + ". " +
+        (left > 0 ? "Execution possible in " + fmtDur(left) + "." : "You will be executed the next time you log in.");
+  } else {
+    t = "⛓️ IN JAIL for " + escapeHTML(j.crime) + ". Released in " + fmtDur(Date.parse(j.release_at) - Date.now()) + ".";
+  }
+  b.style.display = "block";
+  b.innerHTML = t + '<br><span style="font-weight:normal;font-size:13px;">Paydays, trading, missions, buying, building and betrayal are locked. You can still chat.</span>';
+}
+
+/* ---------- Arrest / release animations (reuse the notice animations) ---------- */
+
+NA_THEME.jail = { c: "#9aa0a6", i: "⛓️", t: "ARRESTED!", bits: ["⛓️", "🔒", "🚔"], shake: true, btn: "ACCEPT" };
+NA_THEME.free = { c: "#00ff88", i: "🕊️", t: "RELEASED!", bits: ["🕊️", "⭐", "😀"], shake: false, btn: "FREEDOM!" };
+
+function jailWatch() {
+  if (!currentUser) return;
+  const j = jailOf(currentUser), key = "smfaJailSeen_" + currentUser, seen = localStorage.getItem(key);
+  if (jailActive(j)) {
+    if (seen !== j.jailed_at) {
+      localStorage.setItem(key, j.jailed_at);
+      noticeAnim({ type: "jail", sub: "You were jailed for", big: j.crime,
+        reason: j.lifetime ? "Lifetime sentence" : "Sentence: " + fmtLen(Math.round((Date.parse(j.release_at) - Date.parse(j.jailed_at)) / 60000)) });
+    }
+  } else if (seen && seen !== "free") {
+    localStorage.setItem(key, "free");
+    noticeAnim({ type: "free", sub: "You are free", big: "Released", reason: "" });
+  }
+}
+
+/* ---------- Jail tab ---------- */
+
+(function buildJailTab() {
+  const team = document.getElementById("team");
+  if (!team || document.getElementById("jail")) return;
+  const p = document.createElement("div");
+  p.id = "jail"; p.className = "panel";
+  p.innerHTML = '<h2>⛓️ JAIL</h2><div id="jailBody"></div>';
+  team.parentNode.insertBefore(p, team);
+
+  const nav = document.querySelector(".navigation");
+  if (nav) {
+    const b = document.createElement("button");
+    b.textContent = "⛓️ JAIL";
+    b.onclick = () => openPanel("jail");
+    nav.insertBefore(b, nav.lastElementChild);
+  }
+})();
+
+function renderJail(force) {
+  const body = document.getElementById("jailBody"), panel = document.getElementById("jail");
+  if (!body || !panel || !panel.classList.contains("active") || !currentUser || !accounts[currentUser]) return;
+
+  const pres = currentUser === "President";
+  const rows = Object.values(jails).filter(jailActive).sort((a, b) => Date.parse(a.jailed_at) - Date.parse(b.jailed_at));
+  const sig = JSON.stringify([pres, rows.map(r => [r.username, r.jailed_at, r.event_id]), yard.map(y => y.id), Object.keys(accounts).length]);
+  const ae = document.activeElement;
+  if (!force) {
+    if (sig === jailSig) return;
+    if (body.contains(ae) && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return;
+  }
+  jailSig = sig;
+
+  let h = '<div class="info-box"><h3>⛓️ Prisoners</h3>' + (rows.length ? rows.map(j => {
+    const a = accounts[j.username];
+    let status;
+    if (j.event_id) status = "☠️ <b>Execution in progress</b>";
+    else if (j.lifetime) {
+      const at = Date.parse(j.jailed_at) + LIFE_MS;
+      status = at > Date.now()
+        ? 'Lifetime sentence — can be executed in <b class="jTimer" data-end="' + at + '">' + fmtDur(at - Date.now()) + "</b>"
+        : "Lifetime sentence — <b>executed the next time they log in</b>";
+    } else {
+      const at = Date.parse(j.release_at);
+      status = 'Released in <b class="jTimer" data-end="' + at + '">' + fmtDur(at - Date.now()) + "</b>";
+    }
+    return '<div class="member"><b>⛓️ ' + escapeHTML(dn(j.username)) + "</b>" + (a ? " · " + escapeHTML(a.rank) : "") +
+      "<br>Crime: <b>" + escapeHTML(j.crime) + "</b><br>" + status +
+      (pres && !j.event_id ? '<br><button class="command-button" style="margin-top:8px;" onclick="pardonPlayer(\'' + j.username + '\')">🕊️ PARDON</button>' : "") + "</div>";
+  }).join("") : '<p class="rank-description">The cells are empty. Everyone is behaving... for now.</p>') + "</div>";
+
+  if (pres) {
+    const d = jailDraft;
+    const free = Object.keys(accounts).filter(u => u !== "President" && !jailActive(jails[u]));
+    h += '<div class="info-box"><h3>⚖️ Arrest a Player</h3>' +
+      '<select class="promo-select" onchange="jailDraft.who=this.value"><option value="">— choose player —</option>' +
+      free.map(u => '<option value="' + u + '"' + (d.who === u ? " selected" : "") + ">" + escapeHTML(u) + " (" + escapeHTML(accounts[u].rank) + ")</option>").join("") +
+      "</select><br><br>" +
+      '<select class="promo-select" onchange="jailDraft.crime=this.value;renderJail(true)"><option value="">— choose crime —</option>' +
+      CRIMES.map((g, gi) => '<optgroup label="' + escapeHTML(g.g) + '">' + g.list.map((c, i) => {
+        const v = gi + "|" + i;
+        return '<option value="' + v + '"' + (d.crime === v ? " selected" : "") + ">" + escapeHTML(c[0]) + " — " + fmtLen(c[1]) + "</option>";
+      }).join("") + "</optgroup>").join("") +
+      '<option value="custom"' + (d.crime === "custom" ? " selected" : "") + ">✏️ Custom crime...</option></select>";
+    if (d.crime === "custom") {
+      h += '<input class="account-input" maxlength="80" placeholder="Crime (3–80 characters)" value="' + escapeHTML(d.custom) + '" oninput="jailDraft.custom=this.value">' +
+        '<input type="number" min="0.02" step="0.5" class="account-input" placeholder="Sentence in hours (max 720)" value="' + escapeHTML(String(d.hours)) + '" oninput="jailDraft.hours=this.value"' + (d.life ? " disabled" : "") + ">" +
+        '<label style="display:block;margin:8px 0;"><input type="checkbox"' + (d.life ? " checked" : "") +
+        ' onchange="jailDraft.life=this.checked;renderJail(true)"> Lifetime (executed after 48 hours, at their next login)</label>';
+    }
+    h += '<br><button class="command-button" onclick="arrestPlayer()">⛓️ ARREST</button><p id="jailResult"></p></div>';
+  }
+
+  h += '<div class="info-box"><h3>☠️ Graveyard</h3>' + (yard.length ? yard.map(y =>
+    '<div class="member">☠️ <b>' + escapeHTML(dn(y.username)) + "</b> · " + escapeHTML(y.rank || "?") +
+    "<br>Executed for <b>" + escapeHTML(y.crime || "?") + '</b><br><span class="rank-description">' +
+    escapeHTML(new Date(y.died_at).toLocaleString()) + "</span></div>").join("")
+    : '<p class="rank-description">Nobody has been executed.</p>') + "</div>";
+
+  body.innerHTML = h;
+}
+
+async function arrestPlayer() {
+  const say = (t, ok) => { const m = document.getElementById("jailResult"); if (m) { m.textContent = t; m.className = ok ? "success" : "error"; } };
+  if (currentUser !== "President") return;
+  if (!auth) return say("❌ Log in again after the SQL has run. It is needed to prove you are the President.");
+  const d = jailDraft;
+  if (!d.who) return say("❌ Choose a player.");
+  if (!d.crime) return say("❌ Choose a crime.");
+
+  let crime, minutes, life;
+  if (d.crime === "custom") {
+    crime = d.custom.trim().replace(/\s+/g, " ");
+    life = !!d.life;
+    minutes = life ? 0 : Math.round(parseFloat(d.hours) * 60);
+    if (crime.length < 3 || crime.length > 80) return say("❌ The crime needs 3–80 characters.");
+    if (!life && !(minutes >= 1 && minutes <= 43200)) return say("❌ Enter a sentence between 0.02 and 720 hours, or tick Lifetime.");
+  } else {
+    const [gi, i] = d.crime.split("|").map(Number);
+    const c = CRIMES[gi] && CRIMES[gi].list[i];
+    if (!c) return say("❌ Choose a crime.");
+    crime = c[0]; minutes = c[1]; life = c[1] === 0;
+  }
+
+  if (!confirm("Arrest " + d.who + " for \"" + crime + "\"?\nSentence: " + (life ? "LIFETIME (execution after 48 hours)" : fmtLen(minutes)))) return;
+  say("📡 Arresting...", true);
+  try {
+    const r = await sb("rpc/smfa_arrest", { method: "POST",
+      body: JSON.stringify({ p_pw: auth.pw, p_target: d.who, p_crime: crime, p_minutes: life ? null : minutes, p_life: life }) });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    const out = await r.json();
+    const msg = { bad: "❌ The server rejected your password.", locked: "⏳ Too many wrong attempts. Try again later.",
+      nope: "❌ The President can't be arrested.", nouser: "❌ That player no longer exists.",
+      badcrime: "❌ The crime needs 3–80 characters.", badtime: "❌ Sentence must be between 1 minute and 30 days.",
+      already: "❌ That player is already in jail." };
+    if (out !== "ok") return say(msg[out] || "❌ Could not arrest. (" + out + ")");
+    logAct("⛓️ Jailed " + d.who + " for " + crime);
+    jailDraft = { who: "", crime: "", custom: "", hours: "", life: false };
+    await loadJails();
+    renderJail(true);
+    const m = document.getElementById("jailResult");
+    if (m) { m.textContent = "✅ " + d.who + " was arrested for " + crime + "."; m.className = "success"; }
+  } catch (e) {
+    console.error(e);
+    say("⚠️ Could not arrest. Did you run the jail SQL? (" + e.message + ")");
+  }
+}
+
+async function pardonPlayer(u) {
+  if (currentUser !== "President" || !auth) return;
+  if (!confirm("Pardon " + u + " and release them?")) return;
+  try {
+    const r = await sb("rpc/smfa_pardon", { method: "POST", body: JSON.stringify({ p_pw: auth.pw, p_target: u }) });
+    if (!r.ok) throw new Error(r.status);
+    const out = await r.json();
+    if (out === "executing") alert("⚠️ Too late. The execution has already started.");
+    else if (out !== "ok") alert("⚠️ Could not pardon. (" + out + ")");
+    else logAct("🕊️ Pardoned " + u);
+  } catch (e) { console.error(e); alert("⚠️ Could not pardon. (" + e.message + ")"); }
+  await loadJails();
+  renderJail(true);
+}
+
+/* ---------- Executions ---------- */
+
+(function addExecutionStyles() {
+  const s = document.createElement("style");
+  s.textContent = `
+  #exOverlay{position:fixed;inset:0;z-index:10003;background:rgba(10,0,0,.95);display:flex;
+    align-items:center;justify-content:center;overflow:hidden;animation:promoFade .6s ease}
+  .ex-card{position:relative;text-align:center;background:#140808;border:2px solid #ff4d4d;border-radius:18px;
+    padding:30px 26px;max-width:440px;width:90%;box-shadow:0 0 70px rgba(255,77,77,.5)}
+  .ex-skull{font-size:70px;animation:naBob 1.6s infinite}
+  .ex-title{font-size:26px;font-weight:bold;letter-spacing:3px;color:#ff4d4d;margin:8px 0 14px}
+  .ex-line,.ex-name,.ex-end,.ex-btn{opacity:0;animation:exIn .8s ease forwards}
+  .ex-line{color:#ccc;margin:8px 0}
+  .ex-name{font-size:30px;font-weight:bold;color:#fff;margin:6px 0 10px}
+  .ex-end{font-size:20px;font-weight:bold;color:#ff4d4d;margin:20px 0 6px;letter-spacing:2px}
+  .ex-btn{background:#ff4d4d;color:#fff;margin-top:18px}
+  .ex-btn:hover{background:#cc3b3b}
+  @keyframes exIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}`;
+  document.head.appendChild(s);
+})();
+
+async function openEvents() {
+  try {
+    const r = await sb("rpc/smfa_open_events", { method: "POST", body: "{}" });
+    return r.ok ? await r.json() : [];
+  } catch (e) { return []; }
+}
+
+function finalizeLater(id, age) {
+  if (!id) return;
+  const call = () => sb("rpc/smfa_finalize", { method: "POST", body: JSON.stringify({ p_event: id }) }).catch(() => {});
+  const wait = Math.max(0, 55 - (age || 0)) * 1000;
+  setTimeout(call, wait);
+  setTimeout(call, wait + 20000);
+}
+
+function showExecution(ev, condemned) {
+  if (condemned && ev.age >= 40) return showDeathScreen(ev);
+  const old = document.getElementById("exOverlay");
+  if (old) old.remove();
+  const d = ev.data || {};
+  const ov = document.createElement("div");
+  ov.id = "exOverlay";
+  ov.innerHTML =
+    '<div class="ex-card"><div class="ex-skull">☠️</div>' +
+    '<div class="ex-title">' + (condemned ? "YOUR EXECUTION" : "AN EXECUTION") + "</div>" +
+    '<div class="ex-line" style="animation-delay:1.2s">' + (condemned ? "You are the condemned." : "The condemned:") + "</div>" +
+    '<div class="ex-name" style="animation-delay:2s">' + escapeHTML(dn(d.user)) + "</div>" +
+    '<div class="ex-line" style="animation-delay:3s">Rank: <b>' + escapeHTML(d.rank || "?") + "</b></div>" +
+    '<div class="ex-line" style="animation-delay:4s">Crime: <b>' + escapeHTML(d.crime || "?") + "</b></div>" +
+    '<div class="ex-line" style="animation-delay:5.5s">Sentence: <b>LIFETIME</b>. The 48 hours have run out.</div>' +
+    '<div class="ex-end" style="animation-delay:8s">THE SENTENCE HAS BEEN CARRIED OUT.</div>' +
+    '<button class="login-button ex-btn" style="animation-delay:9.5s">' + (condemned ? "FAREWELL" : "LOOK AWAY") + "</button></div>";
+
+  const bits = ["☠️", "🕯️", "🥀", "⚰️"];
+  for (let i = 0; i < 30; i++) {
+    const b = document.createElement("span");
+    b.className = "promo-bit";
+    b.textContent = bits[i % bits.length];
+    b.style.left = Math.random() * 100 + "%";
+    b.style.animationDuration = (3 + Math.random() * 3) + "s";
+    b.style.animationDelay = (Math.random() * 3) + "s";
+    ov.appendChild(b);
+  }
+  ov.querySelector("button").onclick = () => { ov.remove(); if (condemned) showDeathScreen(ev); };
+  document.body.appendChild(ov);
+  if (condemned) finalizeLater(ev.id, ev.age);
+}
+
+function showDeathScreen(ev) {
+  kicked = true;                       // no "account removed" alert
+  const old = document.getElementById("exOverlay");
+  if (old) old.remove();
+  const ov = document.createElement("div");
+  ov.id = "exOverlay";
+  ov.innerHTML =
+    '<div class="ex-card"><div class="ex-skull">☠️</div><div class="ex-title">YOU HAVE BEEN EXECUTED</div>' +
+    '<div class="ex-line" style="animation-delay:.5s">Your account is gone and your portfolio now reads <b>DEAD</b>.</div>' +
+    '<div class="ex-line" style="animation-delay:1.5s">You can always make a new account and start again as a Recruit.</div>' +
+    '<button class="login-button ex-btn" style="animation-delay:2.5s" onclick="location.reload()">CREATE A NEW ACCOUNT</button></div>';
+  document.body.appendChild(ov);
+  if (ev) finalizeLater(ev.id, ev.age);
+  walletReady = false;                 // stop saving a wallet that is about to be deleted
+  auth = null;
+  currentUser = null;
+}
+
+async function checkMyExecution() {
+  const j = currentUser ? jails[currentUser] : null;
+  if (!auth || !j || !j.lifetime) return;
+  try {
+    const r = await sb("rpc/smfa_execute_me", { method: "POST", body: JSON.stringify({ p_user: currentUser, p_pw: auth.pw }) });
+    if (!r.ok) throw new Error(r.status);
+    const out = await r.json();
+    if (!out || !out.id || exSeen.has(out.id)) return;
+    exSeen.add(out.id);
+    kicked = true;
+    const ev = (await openEvents()).find(e => e.id === out.id) ||
+      { id: out.id, age: out.age || 0, data: { user: currentUser, rank: accounts[currentUser].rank, crime: j.crime } };
+    showExecution(ev, true);
+  } catch (e) { console.warn("Execution check:", e); }
+}
+
+async function pollEvents() {
+  if (exBusy || document.hidden || !currentUser || !accounts[currentUser]) return;
+  exBusy = true;
+  try {
+    for (const e of await openEvents()) {
+      if (!e.done && e.age >= 52 && Date.now() - (finTried[e.id] || 0) > 15000) {
+        finTried[e.id] = Date.now();
+        sb("rpc/smfa_finalize", { method: "POST", body: JSON.stringify({ p_event: e.id }) }).catch(() => {});
+      }
+      if (exSeen.has(e.id) || e.age >= 40) continue;
+      exSeen.add(e.id);
+      if (e.data && e.data.user === currentUser) { kicked = true; showExecution(e, true); }
+      else {
+        showExecution(e, false);
+        if (auth) sb("rpc/smfa_watch", { method: "POST",
+          body: JSON.stringify({ p_event: e.id, p_user: currentUser, p_pw: auth.pw }) }).catch(() => {});
+      }
+    }
+  } catch (err) { console.warn("Events:", err); }
+  exBusy = false;
+}
+
+/* ---------- Portfolio: jail marks and the dead ---------- */
+
+function pfOpenDead(id) { pfDeadSel = id; renderPortfolio(); }
+function pfBackDead() { pfDeadSel = null; renderPortfolio(); }
+
+const _renderPortfolioV30j = renderPortfolio;
+renderPortfolio = function () {
+  const body = document.getElementById("pfBody"), panel = document.getElementById("portfolio");
+  if (!body || !panel || !panel.classList.contains("active") || !currentUser || !accounts[currentUser]) return _renderPortfolioV30j();
+
+  if (pfDeadSel !== null) {
+    const y = yard.find(x => Number(x.id) === Number(pfDeadSel));
+    if (!y) { pfDeadSel = null; return renderPortfolio(); }
+    const st = (l, v) => '<div class="home-stat"><small>' + l + "</small><b>" + v + "</b></div>";
+    body.innerHTML = '<div class="info-box"><button class="command-button" onclick="pfBackDead()">⬅️ BACK</button>' +
+      '<h3 style="margin-top:14px;">☠️ ' + escapeHTML(dn(y.username)) + ' <span style="color:#ff4d4d;">— DEAD</span></h3>' +
+      '<p class="rank-description">Executed ' + escapeHTML(new Date(y.died_at).toLocaleString()) + "</p>" +
+      '<div class="home-status">' +
+      st("🎖️ Rank at death", escapeHTML(y.rank || "?")) + st("⭐ Level", y.rank ? lvOf(y.rank) : "?") +
+      st("🏴 Main Team", escapeHTML(teamLabel(y.team))) + st("⚖️ Crime", escapeHTML(y.crime || "?")) +
+      st("💰 Estate", formatMoney(Number(y.net_worth) || 0)) + st("👀 Witnesses", fmtN(y.viewers || 0)) + "</div>" +
+      '<p class="rank-description">This soldier was executed and their account no longer exists. The name can be taken by a new recruit.</p></div>';
+    return;
+  }
+
+  _renderPortfolioV30j();
+
+  if (pfSel) {
+    const h = body.querySelector("h3"), j = jailOf(pfSel);
+    if (jailActive(j) && h && !body.querySelector("#jailTag")) {
+      h.insertAdjacentHTML("afterend", '<p id="jailTag" class="error">⛓️ <b>In jail</b> for ' + escapeHTML(j.crime) + (j.lifetime ? " (lifetime sentence)" : "") + "</p>");
+    }
+  } else {
+    body.querySelectorAll(".member[onclick]").forEach(el => {
+      const m = (el.getAttribute("onclick") || "").match(/pfOpen\('(.+)'\)/);
+      const b = el.querySelector("b");
+      if (m && b && jailedNow(m[1]) && !el.textContent.includes("⛓️")) b.insertAdjacentText("afterend", " ⛓️");
+    });
+    if (!body.querySelector("#yardBox")) {
+      body.insertAdjacentHTML("beforeend", '<div class="info-box" id="yardBox"><h3>☠️ Graveyard</h3>' +
+        (yard.length ? yard.map(y => '<div class="member" style="cursor:pointer;" onclick="pfOpenDead(' + Number(y.id) + ')">☠️ <b>' +
+          escapeHTML(dn(y.username)) + "</b> · " + escapeHTML(y.rank || "?") +
+          '<br><span class="rank-description">DEAD · executed for ' + escapeHTML(y.crime || "?") + "</span></div>").join("")
+          : '<p class="rank-description">Nobody has been executed.</p>') + "</div>");
+    }
+  }
+};
+
+/* ---------- Wiring ---------- */
+
+const _openPanelV30j = openPanel;
+openPanel = async function (name) {
+  await _openPanelV30j(name);
+  if (name === "jail") { await Promise.all([loadJails(), loadYard()]); renderJail(true); }
+  if (name === "portfolio") { pfDeadSel = null; loadYard().then(() => renderPortfolio()); }
+};
+
+const _loginV30j = login;
+login = async function () {
+  const u = (document.getElementById("username").value || "").trim();
+  if (u) await loadJails();            // know the jail state before any payday can run
+  await _loginV30j();
+  if (!currentUser) return;
+  await Promise.all([loadJails(), loadYard()]);
+  renderJailBanner();
+  jailWatch();
+  await checkMyExecution();
+};
+
+setInterval(async function () {
+  if (!currentUser || !accounts[currentUser]) return;
+  await loadJails();
+  renderJailBanner(); jailWatch(); renderJail();
+}, 5000);
+
+setInterval(async function () {
+  if (!currentUser || !accounts[currentUser]) return;
+  await loadYard();
+  renderJail();
+  const p = document.getElementById("portfolio");
+  if (p && p.classList.contains("active")) renderPortfolio();
+}, 15000);
+
+setInterval(pollEvents, 3000);
+
+setInterval(function () {
+  renderJailBanner();
+  document.querySelectorAll("#jailBody .jTimer").forEach(el => {
+    el.textContent = fmtDur(Number(el.dataset.end) - Date.now());
+  });
+}, 1000);
+
+const _renderHomeV30j = renderHome;
+renderHome = function () {
+  _renderHomeV30j();
+  const home = document.getElementById("home");
+  if (!home || home.dataset.jail) return;
+  const box = Array.from(home.querySelectorAll(".info-box")).find(b => b.querySelector("h3") && b.querySelector("h3").textContent.includes("How It Works"));
+  const ul = box && box.querySelector("ul");
+  if (!ul) return;
+  home.dataset.jail = "1";
+  ul.insertAdjacentHTML("beforeend", "<li>⛓️ <b>Jail:</b> the President can arrest players for crimes. Prisoners can't earn, trade or fight, but can still chat. A lifetime sentence ends in an execution in front of everyone online, and the executed player's account is deleted. You can always start a new one.</li>");
+};
+
+(function addJailLog() {
+  const items = [
+    "New ⛓️ JAIL tab. The President can arrest players using 57 preset crimes (each with a fixed sentence) or a custom crime and sentence, and can pardon at any time.",
+    "Prisoners earn no paydays and can't trade, run missions, buy, build or betray. They can still chat.",
+    "Lifetime sentences: after 48 hours, the prisoner's next login triggers an execution that everyone online watches.",
+    "Executed accounts are deleted and show as ☠️ DEAD in the Portfolio and the Graveyard. Their shares are sold. Half the estate is split between the President and the viewers, and half goes to the branch warehouses as materials.",
+    "You can always create a new account after an execution."
+  ];
+  const e = UPDATE_LOG.find(x => x.v === "v30");
+  if (e) e.items.push(...items);
+  else UPDATE_LOG.unshift({ v: "v30", title: "Release update", items });
+})();
 /* ==================================================
    START
 ================================================== */
