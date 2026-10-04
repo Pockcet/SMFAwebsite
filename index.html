@@ -10581,6 +10581,37 @@ UPDATE_LOG.unshift({
     "The President can call the Assistants to stand in. The first Assistant to accept earns the extra share, and the President is still paid."
   ]
 });
+    /* ===== SMFA PATCH v30.6: FORMAL NOTICE ON THE HOME PAGE ===== */
+
+const _renderHomeV306 = renderHome;
+renderHome = function () {
+  _renderHomeV306();
+  const home = document.getElementById("home");
+  if (!home || document.getElementById("disclaimerBox")) return;
+  const hero = home.querySelector(".home-hero");
+  if (!hero) return;
+
+  const box = document.createElement("div");
+  box.className = "info-box";
+  box.id = "disclaimerBox";
+  box.style.borderLeft = "4px solid #00ff88";
+  box.innerHTML =
+    "<h3>📜 Official Notice</h3>" +
+    '<p style="color:#ccc;margin-top:0;">The Smiley Face Army (SMFA) is a <b>fictional role-playing game created for fun</b>. ' +
+    "Every rank, team, war, crime, arrest, execution, assassination, currency and event in this game is make-believe " +
+    "and takes place only inside the game.</p>" +
+    '<p style="color:#ccc;">Nothing here is real, and nothing here should be taken seriously. ' +
+    "No real money is ever involved, and the game never asks for real personal information. " +
+    "Please do not use a password from any other website, app or game.</p>" +
+    '<p style="color:#888;font-size:13px;margin-bottom:0;">Play fair, be kind to other players, and have fun. 🫡</p>';
+  hero.insertAdjacentElement("afterend", box);
+};
+
+UPDATE_LOG.unshift({
+  v: "v30.6", title: "Official notice", items: [
+    "Added a formal notice on the Home page: SMFA is a fictional role-playing game for fun, so nothing in it should be taken seriously."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
