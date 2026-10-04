@@ -10612,6 +10612,545 @@ UPDATE_LOG.unshift({
     "Added a formal notice on the Home page: SMFA is a fictional role-playing game for fun, so nothing in it should be taken seriously."
   ]
 });
+    /* ===== SMFA PATCH v31: NPC ATTACKS + MINIGAMES ===== */
+
+let waves = [], waveHist = [], waveBusy = false, mgBusy = false, defMsg = "", defSig = "";
+const waveSeen = new Set();
+
+/* ---------- Seeded random + 10 minigames ---------- */
+
+function mkRnd(seed) {
+  let a = (Number(seed) >>> 0) || 1;
+  return function () {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+(function addMinigameStyles() {
+  const s = document.createElement("style");
+  s.textContent = `
+  #mgOverlay{position:fixed;inset:0;z-index:10005;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;overflow:auto}
+  .mg-card{background:#181818;border:2px solid #ff4d4d;border-radius:16px;padding:20px;width:94%;max-width:420px;
+    box-shadow:0 0 50px rgba(255,77,77,.45);margin:auto}
+  .mg-title{font-size:20px;font-weight:bold;color:#ff4d4d;letter-spacing:2px;text-align:center}
+  .mg-help{color:#aaa;text-align:center;font-size:13px;margin:6px 0 10px}
+  .mg-bar{height:8px;background:#222;border-radius:4px;overflow:hidden;margin-bottom:10px}
+  #mgFill{height:8px;width:100%;background:#ff4d4d}
+  #mgMsg{text-align:center;margin-top:10px;min-height:22px}`;
+  document.head.appendChild(s);
+})();
+
+const mgEl = (tag, css, text) => { const e = document.createElement(tag); if (css) e.style.cssText = css; if (text !== undefined) e.textContent = text; return e; };
+
+function mgTap(body, c) {
+  const need = 6 + Math.floor(c.power / 2); let hits = 0;
+  const info = mgEl("div", "margin:6px 0;"); body.appendChild(info);
+  const area = mgEl("div", "position:relative;height:220px;background:#0a0a0a;border:1px solid #333;border-radius:8px;overflow:hidden;"); body.appendChild(area);
+  const upd = () => { info.textContent = "Drones hit: " + hits + " / " + need; }; upd();
+  const spawn = () => {
+    if (c.over()) return;
+    const t = mgEl("button", "position:absolute;font-size:28px;background:none;border:none;cursor:pointer;left:" +
+      Math.round(c.rnd() * 80) + "%;top:" + Math.round(c.rnd() * 75) + "%;", "🎯");
+    t.onclick = () => { t.remove(); hits++; upd(); if (hits >= need) c.win(); };
+    area.appendChild(t);
+    setTimeout(() => t.remove(), Math.max(500, 1300 - c.power * 60));
+    setTimeout(spawn, Math.max(350, 800 - c.power * 40));
+  };
+  spawn();
+}
+
+function mgMemory(body, c) {
+  const cols = ["#ff4d4d", "#00ff88", "#4da6ff", "#f1c40f"], len = 4 + Math.floor(c.power / 3);
+  const seq = Array.from({ length: len }, () => Math.floor(c.rnd() * 4));
+  const msg = mgEl("div", "margin:6px 0;", "Watch the signal..."); body.appendChild(msg);
+  const row = mgEl("div", "display:grid;grid-template-columns:1fr 1fr;gap:10px;"); body.appendChild(row);
+  const bs = cols.map(col => { const b = mgEl("button", "height:70px;border-radius:10px;border:none;opacity:.35;background:" + col + ";"); row.appendChild(b); return b; });
+  let pos = 0, accept = false;
+  const flash = i => { bs[i].style.opacity = 1; setTimeout(() => { bs[i].style.opacity = .35; }, 350); };
+  bs.forEach((b, i) => {
+    b.onclick = () => {
+      if (!accept || c.over()) return;
+      flash(i);
+      if (i !== seq[pos]) return c.lose();
+      pos++; msg.textContent = "Repeat the signal: " + pos + " / " + len;
+      if (pos >= len) c.win();
+    };
+  });
+  seq.forEach((s, k) => setTimeout(() => { if (!c.over()) flash(s); }, 900 + k * 650));
+  setTimeout(() => { accept = true; msg.textContent = "Your turn: repeat the signal (0 / " + len + ")"; }, 900 + len * 650);
+}
+
+function mgHack(body, c) {
+  const need = 3 + Math.floor(c.power / 4), chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; let done = 0, code = "";
+  const mk = () => Array.from({ length: 5 + Math.floor(c.power / 3) }, () => chars[Math.floor(c.rnd() * chars.length)]).join("");
+  const shown = mgEl("div", "font:bold 26px monospace;letter-spacing:4px;color:#00ff88;margin:10px 0;text-align:center;"); body.appendChild(shown);
+  const inp = mgEl("input"); inp.className = "account-input"; inp.autocomplete = "off"; inp.autocapitalize = "characters"; inp.placeholder = "Type the code"; body.appendChild(inp);
+  const prog = mgEl("div", "margin:6px 0;"); body.appendChild(prog);
+  const next = () => { code = mk(); shown.textContent = code; inp.value = ""; prog.textContent = "Firewalls cracked: " + done + " / " + need; };
+  next();
+  inp.oninput = () => { if (c.over()) return; if (inp.value.trim().toUpperCase() === code) { done++; if (done >= need) return c.win(); next(); } };
+  setTimeout(() => inp.focus(), 100);
+}
+
+function mgMath(body, c) {
+  const need = 4 + Math.floor(c.power / 4); let done = 0, ans = 0;
+  const q = mgEl("div", "font:bold 28px monospace;margin:12px 0;color:#f1c40f;text-align:center;"); body.appendChild(q);
+  const inp = mgEl("input"); inp.className = "account-input"; inp.inputMode = "numeric"; inp.autocomplete = "off"; inp.placeholder = "Answer"; body.appendChild(inp);
+  const prog = mgEl("div", "margin:6px 0;"); body.appendChild(prog);
+  const next = () => {
+    const hi = 12 + c.power * 4, a = 2 + Math.floor(c.rnd() * hi), b = 2 + Math.floor(c.rnd() * hi), t = Math.floor(c.rnd() * 3);
+    if (t === 0) { ans = a + b; q.textContent = a + " + " + b; }
+    else if (t === 1) { const x = Math.max(a, b), y = Math.min(a, b); ans = x - y; q.textContent = x + " − " + y; }
+    else { const m = 2 + Math.floor(c.rnd() * 8), n = 2 + Math.floor(c.rnd() * Math.min(12, 4 + c.power)); ans = m * n; q.textContent = m + " × " + n; }
+    inp.value = ""; prog.textContent = "Circuits fixed: " + done + " / " + need;
+  };
+  next();
+  inp.oninput = () => { if (c.over()) return; if (inp.value.trim() !== "" && Number(inp.value) === ans) { done++; if (done >= need) return c.win(); next(); } };
+  setTimeout(() => inp.focus(), 100);
+}
+
+function mgTiming(body, c) {
+  let hits = 0, miss = 0, zone = 0.5, pos = 0;
+  const w = Math.max(0.10, 0.28 - c.power * 0.015), speed = 0.0035 + c.power * 0.0004, t0 = performance.now();
+  const info = mgEl("div", "margin:6px 0;"); body.appendChild(info);
+  const bar = mgEl("div", "position:relative;height:36px;background:#0a0a0a;border:1px solid #333;border-radius:8px;overflow:hidden;margin-bottom:10px;"); body.appendChild(bar);
+  const z = mgEl("div"); bar.appendChild(z);
+  const m = mgEl("div", "position:absolute;top:0;bottom:0;width:6px;background:#fff;"); bar.appendChild(m);
+  const go = mgEl("button", "", "⏹ STOP"); go.className = "login-button"; body.appendChild(go);
+  const place = () => { zone = 0.15 + c.rnd() * 0.7; z.style.cssText = "position:absolute;top:0;bottom:0;background:rgba(0,255,136,.45);left:" + ((zone - w / 2) * 100) + "%;width:" + (w * 100) + "%;"; };
+  const upd = () => { info.textContent = "Locked: " + hits + " / 3 · Misses: " + miss + " / 3"; };
+  place(); upd();
+  const loop = () => { if (c.over()) return; pos = (Math.sin((performance.now() - t0) * speed) + 1) / 2; m.style.left = (pos * 100) + "%"; requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+  go.onclick = () => {
+    if (c.over()) return;
+    if (Math.abs(pos - zone) <= w / 2) { hits++; if (hits >= 3) return c.win(); place(); }
+    else { miss++; if (miss >= 3) return c.lose(); }
+    upd();
+  };
+}
+
+function mgCode(body, c) {
+  const n = c.power >= 6 ? 4 : 3; let tries = 9;
+  const secret = Array.from({ length: n }, () => Math.floor(c.rnd() * 10)).join("");
+  const info = mgEl("div", "margin:6px 0;font-size:13px;"); body.appendChild(info);
+  const inp = mgEl("input"); inp.className = "account-input"; inp.inputMode = "numeric"; inp.maxLength = n; inp.autocomplete = "off"; inp.placeholder = n + " digits"; body.appendChild(inp);
+  const go = mgEl("button", "", "🔐 TRY CODE"); go.className = "login-button"; body.appendChild(go);
+  const log = mgEl("div", "font:15px monospace;margin:8px 0;max-height:130px;overflow:auto;"); body.appendChild(log);
+  const upd = () => { info.textContent = "Find the " + n + "-digit code. 🟢 right digit, right place · 🟡 right digit, wrong place · Tries left: " + tries; }; upd();
+  go.onclick = () => {
+    const g = inp.value.trim();
+    if (c.over() || g.length !== n || /\D/.test(g)) return;
+    let exact = 0; const sa = [], ga = [];
+    for (let i = 0; i < n; i++) { if (g[i] === secret[i]) exact++; else { sa.push(secret[i]); ga.push(g[i]); } }
+    let near = 0; ga.forEach(d => { const k = sa.indexOf(d); if (k >= 0) { near++; sa.splice(k, 1); } });
+    tries--; upd(); inp.value = "";
+    log.insertAdjacentHTML("afterbegin", g + " → 🟢" + exact + " 🟡" + near + "<br>");
+    if (exact === n) return c.win();
+    if (tries <= 0) c.lose();
+  };
+}
+
+function mgOrder(body, c) {
+  const n = 8 + Math.floor(c.power / 2); let next = 1;
+  const nums = Array.from({ length: n }, (_, i) => i + 1);
+  for (let i = n - 1; i > 0; i--) { const j = Math.floor(c.rnd() * (i + 1)); [nums[i], nums[j]] = [nums[j], nums[i]]; }
+  const info = mgEl("div", "margin:6px 0;"); body.appendChild(info);
+  const upd = () => { info.textContent = "Next system to reboot: " + Math.min(next, n) + " (" + (next - 1) + " / " + n + " done)"; }; upd();
+  const grid = mgEl("div", "display:grid;grid-template-columns:repeat(4,1fr);gap:8px;"); body.appendChild(grid);
+  nums.forEach(v => {
+    const b = mgEl("button", "margin:0;", String(v)); b.className = "command-button";
+    b.onclick = () => {
+      if (c.over()) return;
+      if (v === next) { b.disabled = true; b.style.opacity = .3; next++; upd(); if (next > n) c.win(); }
+      else { b.style.borderColor = "#ff4d4d"; setTimeout(() => { b.style.borderColor = ""; }, 300); }
+    };
+    grid.appendChild(b);
+  });
+}
+
+function mgWires(body, c) {
+  const cols = ["#ff4d4d", "#00ff88", "#4da6ff", "#f1c40f", "#c77dff", "#ff944d"], n = Math.min(6, 4 + Math.floor(c.power / 4));
+  const left = Array.from({ length: n }, (_, i) => i), right = left.slice();
+  for (let i = n - 1; i > 0; i--) { const j = Math.floor(c.rnd() * (i + 1)); [right[i], right[j]] = [right[j], right[i]]; }
+  let sel = -1, done = 0, bad = 0;
+  const info = mgEl("div", "margin:6px 0;"); body.appendChild(info);
+  const upd = () => { info.textContent = "Connected: " + done + " / " + n + " · Mistakes: " + bad + " / 3"; }; upd();
+  const wrap = mgEl("div", "display:grid;grid-template-columns:1fr 1fr;gap:10px;"); body.appendChild(wrap);
+  const L = mgEl("div", "display:grid;gap:8px;"), R = mgEl("div", "display:grid;gap:8px;"); wrap.appendChild(L); wrap.appendChild(R);
+  const lb = {}, mk = i => mgEl("button", "height:38px;border-radius:8px;border:3px solid #222;background:" + cols[i] + ";");
+  const clearSel = () => { Object.values(lb).forEach(x => { x.style.borderColor = "#222"; }); };
+  left.forEach(i => {
+    const b = mk(i);
+    b.onclick = () => { if (c.over() || b.disabled) return; sel = i; clearSel(); b.style.borderColor = "#fff"; };
+    lb[i] = b; L.appendChild(b);
+  });
+  right.forEach(i => {
+    const b = mk(i);
+    b.onclick = () => {
+      if (c.over() || b.disabled || sel < 0) return;
+      if (sel === i) { b.disabled = true; lb[i].disabled = true; b.style.opacity = .3; lb[i].style.opacity = .3; done++; sel = -1; clearSel(); upd(); if (done >= n) c.win(); }
+      else { bad++; sel = -1; clearSel(); upd(); if (bad >= 3) c.lose(); }
+    };
+    R.appendChild(b);
+  });
+}
+
+function mgMash(body, c) {
+  const need = 22 + c.power * 3; let n = 0, started = false;
+  const info = mgEl("div", "margin:6px 0;text-align:center;"); body.appendChild(info);
+  const track = mgEl("div", "height:14px;background:#222;border-radius:7px;overflow:hidden;margin-bottom:10px;");
+  const f = mgEl("div", "height:14px;width:0;background:#00ff88;"); track.appendChild(f); body.appendChild(track);
+  const go = mgEl("button", "height:90px;font-size:22px;touch-action:manipulation;", "⚡ TAP FAST!"); go.className = "login-button"; body.appendChild(go);
+  const upd = () => { info.textContent = "Charge: " + n + " / " + need + (started ? "" : " (the 8 second clock starts on your first tap)"); f.style.width = Math.min(100, n / need * 100) + "%"; }; upd();
+  go.onclick = () => {
+    if (c.over()) return;
+    if (!started) { started = true; setTimeout(() => { if (!c.over()) c.lose(); }, 8000); }
+    n++; upd(); if (n >= need) c.win();
+  };
+}
+
+function mgOdd(body, c) {
+  const pairs = [["🙂", "🙃"], ["⭐", "🌟"], ["🔵", "🟦"], ["🟢", "🟩"], ["😠", "😡"], ["⚪", "🔘"], ["🔶", "🔸"]];
+  const rounds = 3, size = Math.min(7, 4 + Math.floor(c.power / 3));
+  let round = 0, miss = 0;
+  const info = mgEl("div", "margin:6px 0;"); body.appendChild(info);
+  const grid = mgEl("div"); body.appendChild(grid);
+  const label = () => { info.textContent = "Round " + (round + 1) + " / " + rounds + " · Mistakes: " + miss + " / 2"; };
+  const build = () => {
+    label();
+    const pr = pairs[Math.floor(c.rnd() * pairs.length)], odd = Math.floor(c.rnd() * size * size);
+    grid.style.cssText = "display:grid;grid-template-columns:repeat(" + size + ",1fr);gap:4px;font-size:24px;";
+    grid.innerHTML = "";
+    for (let i = 0; i < size * size; i++) {
+      const b = mgEl("button", "background:#0d0d0d;border:1px solid #333;border-radius:6px;padding:4px;cursor:pointer;", i === odd ? pr[1] : pr[0]);
+      b.onclick = () => {
+        if (c.over()) return;
+        if (i === odd) { round++; if (round >= rounds) return c.win(); build(); }
+        else { miss++; if (miss >= 2) return c.lose(); label(); }
+      };
+      grid.appendChild(b);
+    }
+  };
+  build();
+}
+
+const MINIGAMES = [null,
+  { n: "Intercept the drones", i: "🎯", t: 25, f: mgTap, h: "Tap the drones before they vanish." },
+  { n: "Repeat the signal", i: "🧠", t: 45, f: mgMemory, h: "Watch the colors, then repeat them in order." },
+  { n: "Stop the hack", i: "💻", t: 40, f: mgHack, h: "Type each firewall code exactly." },
+  { n: "Overload the circuit", i: "🔢", t: 35, f: mgMath, h: "Solve the sums to repair the circuits." },
+  { n: "Lock the frequency", i: "🎚️", t: 35, f: mgTiming, h: "Press STOP when the marker is in the green zone." },
+  { n: "Crack the vault", i: "🔐", t: 60, f: mgCode, h: "Work out the secret code from the hints." },
+  { n: "Reboot the systems", i: "🔌", t: 30, f: mgOrder, h: "Tap the numbers in order, starting with 1." },
+  { n: "Rewire the circuit", i: "🧵", t: 35, f: mgWires, h: "Tap a color on the left, then its match on the right." },
+  { n: "Recharge the shield", i: "⚡", t: 20, f: mgMash, h: "Tap as fast as you can once you start." },
+  { n: "Spot the intruder", i: "👁️", t: 35, f: mgOdd, h: "Find the one that looks different." }
+];
+
+function runMinigame(spec, cb) {
+  const old = document.getElementById("mgOverlay");
+  if (old) old.remove();
+  const g = MINIGAMES[spec.game] || MINIGAMES[1];
+  const rnd = mkRnd(spec.seed || 1);
+  let over = false;
+  const ov = document.createElement("div");
+  ov.id = "mgOverlay";
+  ov.innerHTML = '<div class="mg-card"><div class="mg-title">' + g.i + " " + escapeHTML(g.n.toUpperCase()) + '</div>' +
+    '<div class="mg-help">' + escapeHTML(g.h) + '</div><div class="mg-bar"><div id="mgFill"></div></div>' +
+    '<div id="mgBody"></div><div id="mgMsg"></div></div>';
+  document.body.appendChild(ov);
+  const body = ov.querySelector("#mgBody"), fill = ov.querySelector("#mgFill"), msg = ov.querySelector("#mgMsg");
+  const t0 = Date.now(), limit = g.t * 1000;
+  const tick = setInterval(function () {
+    const p = Math.min(1, (Date.now() - t0) / limit);
+    fill.style.width = (100 - p * 100) + "%";
+    if (p >= 1) end(false);
+  }, 100);
+  function end(won) {
+    if (over) return;
+    over = true;
+    clearInterval(tick);
+    msg.innerHTML = won ? '<b style="color:#00ff88;">✅ SUCCESS!</b>' : '<b style="color:#ff4d4d;">❌ FAILED!</b>';
+    setTimeout(function () { ov.remove(); cb(won, Date.now() - t0); }, 1400);
+  }
+  g.f(body, { power: spec.power || 1, rnd: rnd, over: function () { return over; }, win: function () { end(true); }, lose: function () { end(false); } });
+}
+
+/* ---------- Banner, alarm and defending ---------- */
+
+(function buildWaveBanner() {
+  const h = document.querySelector("header");
+  if (!h || document.getElementById("waveBanner")) return;
+  const b = document.createElement("div");
+  b.id = "waveBanner";
+  b.style.cssText = "display:none;background:#2a0f0a;border-bottom:3px solid #ff944d;color:#ffd2b3;text-align:center;padding:12px;font-weight:bold;";
+  h.insertAdjacentElement("afterend", b);
+})();
+
+function renderWaveBanner() {
+  const b = document.getElementById("waveBanner");
+  if (!b) return;
+  if (!currentUser || !waves.length) { b.style.display = "none"; return; }
+  b.style.display = "block";
+  b.innerHTML = waves.map(w => {
+    const left = w.left === null ? null : Math.max(0, w.left * 1000 - (Date.now() - w.at));
+    const who = w.stage === "dd" ? "the Defensive Division" : "the " + escapeHTML(w.target) + " team";
+    const timer = left === null ? "waiting for defenders to come online"
+      : '<span class="wvTimer" data-end="' + (Date.now() + left) + '">' + fmtDur(left) + "</span> left";
+    const btn = w.mine && !w.played
+      ? ' <button class="command-button" style="margin:6px 0 0;padding:6px 12px;" onclick="startDefense(' + Number(w.id) + ')">🛡️ DEFEND</button>'
+      : (w.mine && w.played ? " ✅ you already fought" : "");
+    return "🚨 <b>" + escapeHTML(w.nation) + "</b> forces (power " + Number(w.power) + ") are attacking the <b>" +
+      escapeHTML(w.target) + "</b> base! Now defending: " + who + " · " + timer + btn;
+  }).join("<br>");
+}
+
+function showWaveAlert(w) {
+  const old = document.getElementById("waveAlert");
+  if (old) old.remove();
+  const d = document.createElement("div");
+  d.id = "waveAlert";
+  d.style.cssText = "position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:10002;background:#1a0a0a;" +
+    "border:2px solid #ff4d4d;border-radius:12px;padding:16px 20px;max-width:92%;width:420px;" +
+    "box-shadow:0 0 30px rgba(255,77,77,.5);text-align:center;";
+  d.innerHTML = "<b>🚨 NPC ATTACK!</b><br>" + escapeHTML(w.nation) + " forces (power " + Number(w.power) + ") are hitting the <b>" +
+    escapeHTML(w.target) + "</b> base.<br>" +
+    '<span style="color:#aaa;font-size:13px;">' +
+    (w.stage === "dd" ? "You are the first line of defense (Defensive Division)." : "The first line fell or was offline. Your base needs you!") + "</span><br>" +
+    '<button class="command-button" style="margin-top:10px;" id="waDef">🛡️ DEFEND</button>' +
+    '<button class="command-button" style="margin-top:10px;" id="waLater">LATER</button>';
+  document.body.appendChild(d);
+  d.querySelector("#waDef").onclick = () => { d.remove(); startDefense(w.id); };
+  d.querySelector("#waLater").onclick = () => d.remove();
+}
+
+async function pollWaves() {
+  if (waveBusy || !currentUser || !accounts[currentUser] || document.hidden) return;
+  waveBusy = true;
+  try {
+    const r = await sb("rpc/smfa_npc_tick", { method: "POST", body: JSON.stringify({ p_user: currentUser }) });
+    if (!r.ok) return;
+    waves = (await r.json()).map(w => Object.assign(w, { at: Date.now() }));
+    renderWaveBanner();
+    waves.forEach(w => {
+      const key = w.id + ":" + w.stage;
+      if (w.mine && !w.played && !waveSeen.has(key)) { waveSeen.add(key); showWaveAlert(w); }
+    });
+    const p = document.getElementById("defense");
+    if (p && p.classList.contains("active")) renderDefense();
+  } catch (e) { console.warn("Waves:", e); }
+  finally { waveBusy = false; }
+}
+
+async function startDefense(id) {
+  if (mgBusy || !auth || !currentUser) return;
+  mgBusy = true;
+  try {
+    const r = await sb("rpc/smfa_npc_start", { method: "POST", body: JSON.stringify({ p_user: currentUser, p_pw: auth.pw, p_wave: id }) });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    const out = await r.json();
+    if (!out.ok) {
+      const msg = { over: "That attack is already over.", jail: "Prisoners can't fight.", role: "That fight isn't yours.",
+        played: "You already fought this attack.", bad: "The server rejected your password.", locked: "Too many wrong attempts." };
+      mgBusy = false;
+      alert("🛡️ " + (msg[out.err] || "Could not start. (" + out.err + ")"));
+      return pollWaves();
+    }
+    runMinigame({ game: out.game, seed: out.seed, power: out.power }, async function (won) {
+      let res = null;
+      try {
+        const r2 = await sb("rpc/smfa_npc_finish", { method: "POST", body: JSON.stringify({ p_user: currentUser, p_pw: auth.pw, p_wave: id, p_won: won }) });
+        res = r2.ok ? await r2.json() : null;
+      } catch (e) { console.warn(e); }
+      mgBusy = false;
+      if (res && res.ok && res.won && res.reward) {
+        payToast("🛡️ <b>You repelled the attack!</b><br><span style='color:#aaa;font-size:13px;'>+" + fmtN(res.reward) + " SD is on its way.</span>");
+        logAct("🛡️ Repelled an NPC attack");
+        addExp(60);
+      } else if (res && res.ok && res.won) {
+        payToast("✅ You won, but the attack was already over.");
+      } else if (res && res.suspicious) {
+        payToast("❌ That win was too fast to count.");
+      } else if (res && res.ok) {
+        payToast("❌ <b>You failed.</b><br><span style='color:#aaa;font-size:13px;'>The attack goes on.</span>");
+      } else {
+        payToast("⚠️ Could not report the result. Check your connection.");
+      }
+      pollWaves();
+    });
+  } catch (e) {
+    mgBusy = false;
+    alert("⚠️ Could not start the defense. Did you run the NPC SQL? (" + e.message + ")");
+  }
+}
+
+/* ---------- Occupation locks ---------- */
+
+const occLeft = t => { const d = war.teams[t]; return d && d.occ ? Math.max(0, d.occ - Date.now()) : 0; };
+
+["buildUnits", "buyMat", "donateMats", "attackNation"].forEach(name => {
+  const orig = window[name];
+  if (typeof orig !== "function") return;
+  window[name] = function (team) {
+    const ms = occLeft(team);
+    if (ms > 0) { alert("🏴 The " + team + " base is occupied by NPC forces for another " + fmtDur(ms) + ". Its war actions are locked."); return; }
+    return orig.apply(this, arguments);
+  };
+});
+
+const _renderWarV31n = renderWar;
+renderWar = function () {
+  _renderWarV31n();
+  const body = document.getElementById("warBody"), sel = document.getElementById("warTeam");
+  if (!body || !sel) return;
+  const ms = occLeft(sel.value);
+  if (ms > 0 && !body.querySelector("#occNote")) {
+    body.insertAdjacentHTML("afterbegin", '<div class="info-box" id="occNote"><p class="error">🏴 This base is occupied by NPC forces for another ' +
+      fmtDur(ms) + ". Building, supplying, donating and attacking are locked.</p></div>");
+  }
+};
+
+/* ---------- Retaliation: attacking a nation makes it strike back ---------- */
+
+const _resolveBattleV31n = resolveBattle;
+resolveBattle = async function (team) {
+  const b = (war.teams[team] || {}).battle;
+  const nat = b && Date.now() >= b.endsAt ? b.nation : null;
+  await _resolveBattleV31n(team);
+  if (nat) sb("rpc/smfa_npc_retaliate", { method: "POST", body: JSON.stringify({ p_nation: nat, p_team: team }) }).catch(() => {});
+};
+
+/* ---------- Defense tab ---------- */
+
+(function buildDefenseTab() {
+  const team = document.getElementById("team");
+  if (!team || document.getElementById("defense")) return;
+  const p = document.createElement("div");
+  p.id = "defense"; p.className = "panel";
+  p.innerHTML = '<h2>🛡️ DEFENSE</h2><div id="defenseBody"></div>';
+  team.parentNode.insertBefore(p, team);
+
+  const nav = document.querySelector(".navigation");
+  if (nav) {
+    const b = document.createElement("button");
+    b.textContent = "🛡️ DEFENSE";
+    b.onclick = () => openPanel("defense");
+    nav.insertBefore(b, nav.lastElementChild);
+  }
+})();
+
+async function loadWaveHist() {
+  try {
+    const r = await sb("smfa_npc_waves?stage=eq.resolved&select=*&order=id.desc&limit=10");
+    if (r.ok) waveHist = await r.json();
+  } catch (e) { /* ignore */ }
+}
+
+function practiceGame() {
+  if (mgBusy) return;
+  const g = Number(document.getElementById("practiceSel").value) || 1;
+  const pw = Number(document.getElementById("practicePow").value) || 1;
+  mgBusy = true;
+  runMinigame({ game: g, seed: Math.floor(Math.random() * 1e9), power: pw }, () => { mgBusy = false; });
+}
+
+async function spawnWave() {
+  if (currentUser !== "President" || !auth) return;
+  const team = document.getElementById("spawnTeam").value, nat = document.getElementById("spawnNation").value;
+  if (!confirm("Launch a " + nat + " attack on the " + team + " base now?")) return;
+  try {
+    const r = await sb("rpc/smfa_npc_spawn", { method: "POST", body: JSON.stringify({ p_pw: auth.pw, p_team: team, p_nation: nat }) });
+    if (!r.ok) throw new Error(r.status);
+    const out = await r.json();
+    defMsg = out === "ok" ? "✅ The attack is on its way." : "❌ Could not launch it. (" + out + ")";
+  } catch (e) { defMsg = "⚠️ Could not launch it. Did you run the NPC SQL? (" + e.message + ")"; }
+  await pollWaves();
+  renderDefense(true);
+}
+
+function renderDefense(force) {
+  const body = document.getElementById("defenseBody"), panel = document.getElementById("defense");
+  if (!body || !panel || !panel.classList.contains("active") || !currentUser || !accounts[currentUser]) return;
+  const pres = currentUser === "President";
+  const sig = JSON.stringify([waves.map(w => [w.id, w.stage, w.mine, w.played]), waveHist.map(h => h.id), pres, defMsg]);
+  const ae = document.activeElement;
+  if (!force) {
+    if (sig === defSig) return;
+    if (body.contains(ae) && /INPUT|SELECT/.test(ae.tagName)) return;
+  }
+  defSig = sig;
+
+  let h = defMsg ? '<div class="info-box"><p>' + escapeHTML(defMsg) + "</p></div>" : "";
+  h += '<div class="info-box"><h3>🛡️ How defense works</h3><ul class="home-list">' +
+    "<li>NPC nations attack the branch bases at random, and a nation you attack strikes back a few hours later.</li>" +
+    "<li><b>First line:</b> the Defensive Division gets 3 minutes to win a minigame. If nobody from it is online, the attack goes straight to the base.</li>" +
+    "<li><b>Last line:</b> the attacked branch's leader and members (main or supporting) get 3 minutes. If nobody is online, the attack waits for them.</li>" +
+    "<li>One win by anyone repels the attack and pays the winner. Each player gets one try.</li>" +
+    "<li>If both lines fail, the base is <b>raided</b> (-20% materials), loses <b>30% of its units</b> and is <b>occupied</b> for 3 hours.</li></ul></div>";
+
+  h += '<div class="info-box"><h3>🚨 Active attacks</h3>' + (waves.length ? waves.map(w =>
+    '<div class="member"><b>' + escapeHTML(w.nation) + "</b> (power " + Number(w.power) + ") → the <b>" + escapeHTML(w.target) + "</b> base<br>" +
+    "Now defending: <b>" + (w.stage === "dd" ? "Defensive Division" : escapeHTML(w.target) + " team") + "</b>" +
+    (w.mine && !w.played ? '<br><button class="command-button" style="margin-top:8px;" onclick="startDefense(' + Number(w.id) + ')">🛡️ DEFEND</button>'
+      : (w.mine ? "<br>✅ You already fought this one." : "")) + "</div>").join("")
+    : '<p class="rank-description">All quiet. For now.</p>') + "</div>";
+
+  h += '<div class="info-box"><h3>🎮 Practice</h3><p class="rank-description">Try any of the 10 minigames. Nothing is at stake.</p>' +
+    '<select id="practiceSel" class="promo-select">' + MINIGAMES.slice(1).map((g, i) => '<option value="' + (i + 1) + '">' + g.i + " " + escapeHTML(g.n) + "</option>").join("") + "</select> " +
+    'Strength: <select id="practicePow" class="promo-select">' + [1, 3, 5, 7, 9, 10].map(n => '<option value="' + n + '">' + n + "</option>").join("") + "</select> " +
+    '<button class="command-button" onclick="practiceGame()">▶️ PLAY</button></div>';
+
+  if (pres) {
+    h += '<div class="info-box"><h3>🚨 Launch an attack (President)</h3>' +
+      '<select id="spawnTeam" class="promo-select">' + Object.keys(ATK).map(t => "<option>" + escapeHTML(t) + "</option>").join("") + "</select> " +
+      '<select id="spawnNation" class="promo-select">' + Object.keys(NATIONS).map(n => "<option>" + escapeHTML(n) + " </option>".replace(" </option>", "</option>")).join("") + "</select> " +
+      '<button class="command-button" onclick="spawnWave()">🚨 LAUNCH</button></div>';
+  }
+
+  h += '<div class="info-box"><h3>📜 Recent attacks</h3>' + (waveHist.length ? waveHist.map(w => {
+    const t = w.outcome === "repelled_dd" ? "🛡️ Repelled by the Defensive Division (" + escapeHTML(dn(w.resolved_by)) + ")"
+      : w.outcome === "repelled_base" ? "🛡️ Repelled by the " + escapeHTML(w.target) + " team (" + escapeHTML(dn(w.resolved_by)) + ")"
+      : w.outcome === "fallen" ? "💥 The base fell" : "—";
+    return '<div class="member"><b>' + escapeHTML(w.nation) + "</b> → " + escapeHTML(w.target) + " · " + t +
+      '<br><span class="rank-description">' + escapeHTML(new Date(w.resolved_at).toLocaleString()) + "</span></div>";
+  }).join("") : '<p class="rank-description">No attacks yet.</p>') + "</div>";
+
+  body.innerHTML = h;
+}
+
+/* ---------- Wiring ---------- */
+
+const _openPanelV31n = openPanel;
+openPanel = async function (name) {
+  await _openPanelV31n(name);
+  if (name === "defense") { await Promise.all([pollWaves(), loadWaveHist()]); renderDefense(true); }
+};
+
+setInterval(pollWaves, 5000);
+setInterval(async function () { if (currentUser) { await loadWaveHist(); renderDefense(); } }, 20000);
+setInterval(function () {
+  document.querySelectorAll("#waveBanner .wvTimer").forEach(el => { el.textContent = fmtDur(Number(el.dataset.end) - Date.now()); });
+}, 1000);
+
+const _loginV31n = login;
+login = async function () {
+  await _loginV31n();
+  if (currentUser) pollWaves();
+};
+
+UPDATE_LOG.unshift({
+  v: "v31", title: "NPC attacks", items: [
+    "NPC nations now attack the branch bases at random, and a nation you attack strikes back a few hours later.",
+    "The Defensive Division is the first line of defense. If none of its members are online, or they fail, the attack hits the base and its leader and members (main and supporting) must fight.",
+    "Defending is a minigame, one of 10 picked at random. One win by anyone repels the attack and pays the winner.",
+    "If both lines fail, the base is raided, loses some units and is occupied for 3 hours, which locks its building, supplying and attacking.",
+    "New 🛡️ DEFENSE tab with active attacks, a practice mode for all 10 minigames, and recent results. The President can launch an attack on purpose."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
