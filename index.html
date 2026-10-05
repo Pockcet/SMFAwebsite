@@ -11151,6 +11151,154 @@ UPDATE_LOG.unshift({
     "New 🛡️ DEFENSE tab with active attacks, a practice mode for all 10 minigames, and recent results. The President can launch an attack on purpose."
   ]
 });
+    /* ===== SMFA PATCH v31.5: THE PRESIDENT CAN DEFEND TOO ===== */
+
+const whoDefends = w => w.stage === "dd" ? "the Defensive Division"
+  : w.stage === "pres" ? "the President (last chance)" : "the " + w.target + " team";
+
+renderWaveBanner = function () {
+  const b = document.getElementById("waveBanner");
+  if (!b) return;
+  if (!currentUser || !waves.length) { b.style.display = "none"; return; }
+  b.style.display = "block";
+  b.innerHTML = waves.map(w => {
+    const left = w.left === null ? null : Math.max(0, w.left * 1000 - (Date.now() - w.at));
+    const timer = left === null ? "waiting for defenders to come online"
+      : '<span class="wvTimer" data-end="' + (Date.now() + left) + '">' + fmtDur(left) + "</span> left";
+    const btn = w.mine && !w.played
+      ? ' <button class="command-button" style="margin:6px 0 0;padding:6px 12px;" onclick="startDefense(' + Number(w.id) + ')">🛡️ DEFEND</button>'
+      : (w.mine && w.played ? " ✅ you already fought" : "");
+    return "🚨 <b>" + escapeHTML(w.nation) + "</b> forces (power " + Number(w.power) + ") are attacking the <b>" +
+      escapeHTML(w.target) + "</b> base! Now defending: " + whoDefends(w) + " · " + timer + btn;
+  }).join("<br>");
+};
+
+showWaveAlert = function (w) {
+  if (currentUser === "President" && w.stage !== "pres") return;   // the President is only alarmed for the last chance
+  const old = document.getElementById("waveAlert");
+  if (old) old.remove();
+  const note = w.stage === "pres" ? "Both lines have failed. You are the last chance to save the base!"
+    : w.stage === "dd" ? "You are the first line of defense (Defensive Division)."
+    : "The first line fell or was offline. Your base needs you!";
+  const d = document.createElement("div");
+  d.id = "waveAlert";
+  d.style.cssText = "position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:10002;background:#1a0a0a;" +
+    "border:2px solid #ff4d4d;border-radius:12px;padding:16px 20px;max-width:92%;width:420px;" +
+    "box-shadow:0 0 30px rgba(255,77,77,.5);text-align:center;";
+  d.innerHTML = "<b>🚨 NPC ATTACK!</b><br>" + escapeHTML(w.nation) + " forces (power " + Number(w.power) + ") are hitting the <b>" +
+    escapeHTML(w.target) + "</b> base.<br>" +
+    '<span style="color:#aaa;font-size:13px;">' + note + "</span><br>" +
+    '<button class="command-button" style="margin-top:10px;" id="waDef">🛡️ DEFEND</button>' +
+    '<button class="command-button" style="margin-top:10px;" id="waLater">LATER</button>';
+  document.body.appendChild(d);
+  d.querySelector("#waDef").onclick = () => { d.remove(); startDefense(w.id); };
+  d.querySelector("#waLater").onclick = () => d.remove();
+};
+
+startDefense = async function (id) {
+  if (mgBusy || !auth || !currentUser) return;
+  mgBusy = true;
+  try {
+    const r = await sb("rpc/smfa_npc_start", { method: "POST", body: JSON.stringify({ p_user: currentUser, p_pw: auth.pw, p_wave: id }) });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    const out = await r.json();
+    if (!out.ok) {
+      const msg = { over: "That attack is already over.", jail: "Prisoners can't fight.", role: "That fight isn't yours.",
+        played: "You already fought this attack.", bad: "The server rejected your password.", locked: "Too many wrong attempts." };
+      mgBusy = false;
+      alert("🛡️ " + (msg[out.err] || "Could not start. (" + out.err + ")"));
+      return pollWaves();
+    }
+    runMinigame({ game: out.game, seed: out.seed, power: out.power }, async function (won) {
+      let res = null;
+      try {
+        const r2 = await sb("rpc/smfa_npc_finish", { method: "POST", body: JSON.stringify({ p_user: currentUser, p_pw: auth.pw, p_wave: id, p_won: won }) });
+        res = r2.ok ? await r2.json() : null;
+      } catch (e) { console.warn(e); }
+      mgBusy = false;
+      if (res && res.ok && res.won && res.president) {
+        payToast("🛡️ <b>You saved the base!</b><br><span style='color:#aaa;font-size:13px;'>The whole army will hear that the President fought.</span>");
+        logAct("🛡️ Repelled an NPC attack as President");
+      } else if (res && res.ok && res.won && res.reward) {
+        payToast("🛡️ <b>You repelled the attack!</b><br><span style='color:#aaa;font-size:13px;'>+" + fmtN(res.reward) + " SD is on its way.</span>");
+        logAct("🛡️ Repelled an NPC attack");
+        addExp(60);
+      } else if (res && res.ok && res.won) {
+        payToast("✅ You won, but the attack was already over.");
+      } else if (res && res.suspicious) {
+        payToast("❌ That win was too fast to count.");
+      } else if (res && res.ok) {
+        payToast("❌ <b>You failed.</b><br><span style='color:#aaa;font-size:13px;'>The attack goes on.</span>");
+      } else {
+        payToast("⚠️ Could not report the result. Check your connection.");
+      }
+      pollWaves();
+    });
+  } catch (e) {
+    mgBusy = false;
+    alert("⚠️ Could not start the defense. Did you run the NPC SQL? (" + e.message + ")");
+  }
+};
+
+renderDefense = function (force) {
+  const body = document.getElementById("defenseBody"), panel = document.getElementById("defense");
+  if (!body || !panel || !panel.classList.contains("active") || !currentUser || !accounts[currentUser]) return;
+  const pres = currentUser === "President";
+  const sig = JSON.stringify([waves.map(w => [w.id, w.stage, w.mine, w.played]), waveHist.map(h => h.id), pres, defMsg]);
+  const ae = document.activeElement;
+  if (!force) {
+    if (sig === defSig) return;
+    if (body.contains(ae) && /INPUT|SELECT/.test(ae.tagName)) return;
+  }
+  defSig = sig;
+
+  let h = defMsg ? '<div class="info-box"><p>' + escapeHTML(defMsg) + "</p></div>" : "";
+  h += '<div class="info-box"><h3>🛡️ How defense works</h3><ul class="home-list">' +
+    "<li>NPC nations attack the branch bases at random, and a nation you attack strikes back a few hours later.</li>" +
+    "<li><b>First line:</b> the Defensive Division gets 3 minutes to win a minigame. If nobody from it is online, the attack goes straight to the base.</li>" +
+    "<li><b>Second line:</b> the attacked branch's leader and members (main or supporting) get 3 minutes. If nobody is online, the attack waits for them.</li>" +
+    "<li><b>The President</b> can fight too, with the same minigame and one try per attack, at any point. If both lines fail and he is online, he gets a last 90 seconds before the base falls. He earns no reward.</li>" +
+    "<li>One win by anyone repels the attack and pays the winner. Each player gets one try.</li>" +
+    "<li>If every line fails, the base is <b>raided</b> (-20% materials), loses <b>30% of its units</b> and is <b>occupied</b> for 3 hours.</li></ul></div>";
+
+  h += '<div class="info-box"><h3>🚨 Active attacks</h3>' + (waves.length ? waves.map(w =>
+    '<div class="member"><b>' + escapeHTML(w.nation) + "</b> (power " + Number(w.power) + ") → the <b>" + escapeHTML(w.target) + "</b> base<br>" +
+    "Now defending: <b>" + escapeHTML(whoDefends(w)) + "</b>" +
+    (w.mine && !w.played ? '<br><button class="command-button" style="margin-top:8px;" onclick="startDefense(' + Number(w.id) + ')">🛡️ DEFEND</button>'
+      : (w.mine ? "<br>✅ You already fought this one." : "")) + "</div>").join("")
+    : '<p class="rank-description">All quiet. For now.</p>') + "</div>";
+
+  h += '<div class="info-box"><h3>🎮 Practice</h3><p class="rank-description">Try any of the 10 minigames. Nothing is at stake.</p>' +
+    '<select id="practiceSel" class="promo-select">' + MINIGAMES.slice(1).map((g, i) => '<option value="' + (i + 1) + '">' + g.i + " " + escapeHTML(g.n) + "</option>").join("") + "</select> " +
+    'Strength: <select id="practicePow" class="promo-select">' + [1, 3, 5, 7, 9, 10].map(n => '<option value="' + n + '">' + n + "</option>").join("") + "</select> " +
+    '<button class="command-button" onclick="practiceGame()">▶️ PLAY</button></div>';
+
+  if (pres) {
+    h += '<div class="info-box"><h3>🚨 Launch an attack (President)</h3>' +
+      '<select id="spawnTeam" class="promo-select">' + Object.keys(ATK).map(t => "<option>" + escapeHTML(t) + "</option>").join("") + "</select> " +
+      '<select id="spawnNation" class="promo-select">' + Object.keys(NATIONS).map(n => "<option>" + escapeHTML(n) + "</option>").join("") + "</select> " +
+      '<button class="command-button" onclick="spawnWave()">🚨 LAUNCH</button></div>';
+  }
+
+  h += '<div class="info-box"><h3>📜 Recent attacks</h3>' + (waveHist.length ? waveHist.map(w => {
+    const t = w.outcome === "repelled_dd" ? "🛡️ Repelled by the Defensive Division (" + escapeHTML(dn(w.resolved_by)) + ")"
+      : w.outcome === "repelled_base" ? "🛡️ Repelled by the " + escapeHTML(w.target) + " team (" + escapeHTML(dn(w.resolved_by)) + ")"
+      : w.outcome === "repelled_pres" ? "🛡️ Repelled by the President"
+      : w.outcome === "fallen" ? "💥 The base fell" : "—";
+    return '<div class="member"><b>' + escapeHTML(w.nation) + "</b> → " + escapeHTML(w.target) + " · " + t +
+      '<br><span class="rank-description">' + escapeHTML(new Date(w.resolved_at).toLocaleString()) + "</span></div>";
+  }).join("") : '<p class="rank-description">No attacks yet.</p>') + "</div>";
+
+  body.innerHTML = h;
+};
+
+UPDATE_LOG.unshift({
+  v: "v31.5", title: "The President defends", items: [
+    "The President can now fight NPC attacks too, with the same minigame and one try per attack, at any time while an attack is active.",
+    "If the Defensive Division and the base both fail and the President is online, he gets a last 90 seconds to save the base before it falls.",
+    "The President earns no Smiley Dollars for defending, and the army is told when he repels an attack."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
