@@ -11299,6 +11299,24 @@ UPDATE_LOG.unshift({
     "The President earns no Smiley Dollars for defending, and the army is told when he repels an attack."
   ]
 });
+    /* ===== SMFA PATCH v31.6: LIGHTER WAR LOADING ===== */
+
+loadWar = async function () {
+  try {
+    const r = await sb("war_state?or=(key.eq.world,key.like.team:*)&select=key,data");
+    if (!r.ok) throw new Error("war_state unavailable (" + r.status + ")");
+    (await r.json()).forEach(x => {
+      if (x.key === "world") war.world = Object.assign({ conquered: {} }, x.data);
+      else if (x.key.startsWith("team:")) war.teams[x.key.slice(5)] = Object.assign(tdef(), x.data);
+    });
+  } catch (e) { console.warn("War load:", e); }
+};
+
+UPDATE_LOG.unshift({
+  v: "v31.6", title: "Lighter war loading", items: [
+    "The war timer now loads only the world and team rows instead of the whole table, so the game uses less data and runs smoother with many players."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
