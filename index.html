@@ -11317,6 +11317,225 @@ UPDATE_LOG.unshift({
     "The war timer now loads only the world and team rows instead of the whole table, so the game uses less data and runs smoother with many players."
   ]
 });
+    /* ===== SMFA PATCH v32: ACCOUNT APPROVAL ===== */
+
+const PENDING_CAP = 25;                 // keep in sync with the SQL
+let pendingAcc = [], pendCache = null, pendAt = 0, pendSig = "", pendMsg = "";
+let pendInit = false;
+const pendSeen = new Set();
+
+/* Returns the list of waiting usernames, or null if the SQL has not been run */
+async function fetchPending(force) {
+  if (!force && pendCache && Date.now() - pendAt < 4000) return pendCache;
+  try {
+    const r = await sb("accounts?approved=eq.false&select=username&order=username.asc");
+    if (!r.ok) return null;
+    pendCache = (await r.json()).map(x => x.username);
+    pendAt = Date.now();
+    return pendCache;
+  } catch (e) { return null; }
+}
+
+/* Waiting accounts never show up anywhere in the game */
+const _loadAccountsV32 = loadAccounts;
+loadAccounts = async function () {
+  await _loadAccountsV32();
+  const p = await fetchPending(false);
+  if (p) {
+    pendingAcc = p;
+    p.forEach(u => { if (u !== currentUser) delete accounts[u]; });
+  }
+};
+
+/* A waiting account cannot log in */
+const _loginV32 = login;
+login = async function () {
+  const u = (document.getElementById("username").value || "").trim();
+  if (u && u !== "President") {
+    try {
+      const r = await sb("accounts?username=eq." + encodeURIComponent(u) + "&select=approved");
+      if (r.ok) {
+        const row = (await r.json())[0];
+        if (row && row.approved === false) {
+          const err = document.getElementById("loginError");
+          err.textContent = "⏳ This account is waiting for the President's approval. Try again later.";
+          err.style.display = "block";
+          return;
+        }
+      }
+    } catch (e) { /* ignore */ }
+  }
+  await _loginV32();
+};
+
+/* Sign-up: full queue message and honest success message */
+const _createAccountV32 = createAccount;
+createAccount = async function () {
+  const msg = document.getElementById("newAccMsg");
+  const name = (document.getElementById("newAccUser").value || "").trim();
+
+  const before = await fetchPending(true);
+  if (before && before.length >= PENDING_CAP) {
+    msg.textContent = "⛔ Too many accounts are waiting for approval right now. Please try again later.";
+    msg.className = "error";
+    return;
+  }
+  await _createAccountV32();
+
+  if (msg.textContent.startsWith("✅")) {
+    const after = await fetchPending(true);
+    if (after && after.includes(name)) {
+      msg.textContent = "✅ Request sent! The President must approve your account before you can log in.";
+    }
+  }
+};
+document.getElementById("newAccSubmit").onclick = createAccount;   // the button kept the older function
+
+/* ---------- President: Account Requests ---------- */
+
+(function buildAccReqBox() {
+  const a = document.getElementById("usernameBox");
+  if (!a || document.getElementById("accReqBox")) return;
+  const b = document.createElement("div");
+  b.className = "account-section"; b.id = "accReqBox"; b.style.display = "none";
+  a.parentNode.insertBefore(b, a);
+})();
+
+function renderAccReq(force) {
+  const box = document.getElementById("accReqBox");
+  if (!box) return;
+  const pres = currentUser === "President";
+  box.style.display = pres ? "block" : "none";
+  if (!pres) return;
+
+  const sig = JSON.stringify([pendingAcc, pendMsg]);
+  if (!force && sig === pendSig) return;
+  pendSig = sig;
+  box.innerHTML = "";
+
+  const h = document.createElement("h3");
+  h.textContent = "📝 Account Requests" + (pendingAcc.length ? " (" + pendingAcc.length + ")" : "");
+  box.appendChild(h);
+
+  const p = document.createElement("p");
+  p.className = "rank-description";
+  p.textContent = "New accounts stay locked until you approve them. Rejecting deletes the account.";
+  box.appendChild(p);
+
+  if (pendMsg) {
+    const m = document.createElement("p");
+    m.textContent = pendMsg;
+    box.appendChild(m);
+  }
+  if (!pendingAcc.length) {
+    const n = document.createElement("p");
+    n.className = "rank-description";
+    n.textContent = "No accounts are waiting.";
+    box.appendChild(n);
+    return;
+  }
+  pendingAcc.forEach(u => {
+    const row = document.createElement("div");
+    row.className = "member";
+    const b = document.createElement("b");
+    b.textContent = "👤 " + u;
+    row.appendChild(b);
+    row.appendChild(document.createElement("br"));
+
+    const ok = document.createElement("button");
+    ok.className = "command-button"; ok.style.marginTop = "8px"; ok.textContent = "✅ APPROVE";
+    ok.onclick = () => approveAccount(u);
+    const no = document.createElement("button");
+    no.className = "command-button"; no.style.marginTop = "8px"; no.textContent = "❌ REJECT";
+    no.onclick = () => rejectAccount(u);
+    row.appendChild(ok); row.appendChild(no);
+    box.appendChild(row);
+  });
+}
+
+async function afterAccReq() {
+  const p = await fetchPending(true);
+  if (p) pendingAcc = p;
+  await loadAccounts();
+  renderTeam();
+  pendBadge();
+  renderAccReq(true);
+}
+
+async function approveAccount(u) {
+  if (currentUser !== "President") return;
+  try {
+    const r = await sb("accounts?username=eq." + encodeURIComponent(u), {
+      method: "PATCH", headers: { "Prefer": "return=representation" }, body: JSON.stringify({ approved: true })
+    });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    if (!(await r.json()).length) throw new Error("That account no longer exists.");
+    pendMsg = "✅ " + u + " was approved and can log in now.";
+    logAct("✅ Approved the account " + u);
+  } catch (e) { console.error(e); pendMsg = "⚠️ " + e.message; }
+  await afterAccReq();
+}
+
+async function rejectAccount(u) {
+  if (currentUser !== "President" || !confirm("Reject " + u + "? Their account will be deleted.")) return;
+  try {
+    const enc = encodeURIComponent(u);
+    const r = await sb("accounts?username=eq." + enc + "&approved=eq.false", {
+      method: "DELETE", headers: { "Prefer": "return=representation" }
+    });
+    if (!r.ok) throw new Error(r.status + ": " + await r.text());
+    if (!(await r.json()).length) throw new Error("That account is no longer waiting.");
+    sb("wallets?username=eq." + enc, { method: "DELETE" }).catch(() => {});
+    pendMsg = "🗑️ " + u + " was rejected and deleted.";
+    logAct("🗑️ Rejected the account " + u);
+  } catch (e) { console.error(e); pendMsg = "⚠️ " + e.message; }
+  await afterAccReq();
+}
+
+/* ---------- Alerts for the President ---------- */
+
+function pendBadge() {
+  const b = Array.from(document.querySelectorAll(".navigation button"))
+    .find(x => (x.getAttribute("onclick") || "").includes("'command'"));
+  if (!b) return;
+  if (!b.dataset.base) b.dataset.base = b.textContent.trim();
+  b.textContent = b.dataset.base + (currentUser === "President" && pendingAcc.length ? " (" + pendingAcc.length + ")" : "");
+}
+
+setInterval(async function () {
+  if (currentUser !== "President" || document.hidden) return;
+  const p = await fetchPending(true);
+  if (!p) return;
+  pendingAcc = p;
+  const fresh = p.filter(u => !pendSeen.has(u));
+  fresh.forEach(u => pendSeen.add(u));
+  if (!pendInit) {
+    pendInit = true;
+    if (p.length) payToast("📝 <b>" + p.length + " account(s) waiting for approval</b><br><span style='color:#aaa;font-size:13px;'>Open the Command Center to review them.</span>");
+  } else if (fresh.length) {
+    payToast("📝 <b>New account request</b><br><span style='color:#aaa;font-size:13px;'>" + escapeHTML(fresh.join(", ")) + " is waiting for your approval.</span>");
+  }
+  pendBadge();
+  renderAccReq();
+}, 8000);
+
+const _updateCommandCenterV32 = updateCommandCenter;
+updateCommandCenter = function () { _updateCommandCenterV32(); renderAccReq(); pendBadge(); };
+
+const _openPanelV32 = openPanel;
+openPanel = async function (name) {
+  await _openPanelV32(name);
+  if (name === "command") { await afterAccReq(); }
+};
+
+UPDATE_LOG.unshift({
+  v: "v32", title: "Account approval", items: [
+    "New accounts now have to be approved by the President before they can log in. This stops spam sign-ups.",
+    "Waiting accounts are hidden everywhere in the game. No more than 25 can wait at once.",
+    "New Account Requests section in the Command Center (President only) with Approve and Reject buttons, plus a popup and a count on the tab when someone is waiting.",
+    "Existing accounts and the President are not affected."
+  ]
+});
 /* ==================================================
    START
 ================================================== */
