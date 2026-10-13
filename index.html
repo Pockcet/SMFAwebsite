@@ -11477,15 +11477,17 @@ async function approveAccount(u) {
 }
 
 async function rejectAccount(u) {
-  if (currentUser !== "President" || !confirm("Reject " + u + "? Their account will be deleted.")) return;
+  if (currentUser !== "President" || !auth) return;
+  if (!confirm("Reject " + u + "? Their account will be deleted.")) return;
   try {
-    const enc = encodeURIComponent(u);
-    const r = await sb("accounts?username=eq." + enc + "&approved=eq.false", {
-      method: "DELETE", headers: { "Prefer": "return=representation" }
-    });
+    /* The database does not let the public key delete accounts, so the server checks the President's password and deletes it */
+    const r = await sb("rpc/smfa_reject_account", { method: "POST", body: JSON.stringify({ p_pw: auth.pw, p_target: u }) });
+    if (r.status === 404) throw new Error("Run sql/smfa_reject_account.sql in Supabase first.");
     if (!r.ok) throw new Error(r.status + ": " + await r.text());
-    if (!(await r.json()).length) throw new Error("That account is no longer waiting.");
-    sb("wallets?username=eq." + enc, { method: "DELETE" }).catch(() => {});
+    const out = await r.json();
+    if (out === "gone") throw new Error("That account is no longer waiting.");
+    if (out === "locked") throw new Error("Too many wrong password attempts. Try again in 10 minutes.");
+    if (out !== "ok") throw new Error("Could not reject (" + out + "). Log out and back in, then try again.");
     pendMsg = "🗑️ " + u + " was rejected and deleted.";
     logAct("🗑️ Rejected the account " + u);
   } catch (e) { console.error(e); pendMsg = "⚠️ " + e.message; }
